@@ -7723,7 +7723,7 @@ function editUserHTML({id}){
     <div class="form-row"><label class="form-label">Departments</label><div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:7px;max-height:90px;overflow-y:auto">${DEPTS.map(d=>`<label style="display:flex;align-items:center;gap:6px;padding:2px;cursor:pointer"><input type="checkbox" class="uf-dept-cb" value="${d.id}"${(Array.isArray(u.deptIds)?u.deptIds:u.deptId?[u.deptId]:[]).includes(d.id)?' checked':''}><span style="font-size:12px">${d.name}</span></label>`).join('')}</div><div style="font-size:10px;color:var(--text3);margin-top:3px">Select one or more departments</div></div>
   </div>
   <div class="form-row"><label class="form-label">Username <span style="font-size:10px;color:var(--text3)">(optional — for login)</span></label><input class="form-input" id="uf-username" value="${u.username||''}" placeholder="e.g. janvi.davda"/></div>
-  <div class="form-row"><label class="form-label">Set New Password <span style="font-size:10px;color:var(--text3)">(leave blank to keep)</span></label><input class="form-input" type="password" id="uf-new-password" placeholder="Min 6 characters" autocomplete="new-password"/></div>
+  
   <div class="g2">
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--bg3);padding:9px 12px;border-radius:var(--r);border:1px solid var(--border)">
       <input type="checkbox" id="uf-billing" ${u.billingEnabled?' checked':''}/>
@@ -7743,33 +7743,33 @@ function editUserHTML({id}){
   </div>`;
 }
 async function updateUser(id){
-  const newPassVal=document.getElementById('uf-new-password')?.value||'';
+  const newPassVal=(document.getElementById('uf-new-password')?.value||'').trim();
   const deptCbs=[...document.querySelectorAll('.uf-dept-cb:checked')].map(el=>el.value);
   const firstDept=deptCbs[0]||null;
-  const updates={name:document.getElementById('uf-name')?.value?.trim(),email:document.getElementById('uf-email')?.value?.trim()||'',username:(document.getElementById('uf-username')?.value||'').trim().toLowerCase(),role:document.getElementById('uf-role')?.value,deptId:firstDept,deptIds:deptCbs,billingEnabled:!!document.getElementById('uf-billing')?.checked,whatsapp:document.getElementById('uf-mobile')?.value?.trim()||'',mobile:document.getElementById('uf-mobile')?.value?.trim()||'',active:!!document.getElementById('uf-active')?.checked};
-  if(pinVal){
-    const pin=String(pinVal).padStart(4,'0').slice(0,4);
-    if(!/^\d{4}$/.test(pin)){toast('PIN must be 4 digits');return}
-    updates.pinHash=await hashPIN(pin);
-    // Update Firebase Auth password for this user
-    // We can't update another user's Auth password from client (security) 
-    // but we flag the account for re-creation on next login
-    try {
-      // Delete and recreate the auth account with new password
-      // This is safe because the user will re-authenticate on next login
-      const resetEmail=fbAuthEmail(id);
-      await auth.createUserWithEmailAndPassword(resetEmail, updates.pinHash)
-        .catch(async(e)=>{
-          if(e.code==='auth/email-already-in-use'){
-            // Account exists - we can't update without being signed in as that user
-            // The account will re-sync on next login via the wrong-password handler
-            console.log('[Auth] PIN reset: will re-sync on next login for user', id);
-          }
-        });
-    } catch(_){}
-    toast('PIN reset to '+pin);
+  const updates={
+    name: document.getElementById('uf-name')?.value?.trim(),
+    email: document.getElementById('uf-email')?.value?.trim()||'',
+    username: (document.getElementById('uf-username')?.value||'').trim().toLowerCase(),
+    role: document.getElementById('uf-role')?.value,
+    deptId: firstDept,
+    deptIds: deptCbs,
+    billingEnabled: !!document.getElementById('uf-billing')?.checked,
+    active: !!document.getElementById('uf-active')?.checked,
+    whatsapp: document.getElementById('uf-mobile')?.value?.trim()||'',
+    mobile: document.getElementById('uf-mobile')?.value?.trim()||''
+  };
+  if(!updates.name){toast('Name required');return;}
+  await fbUpd('users/'+id, updates);
+  // Handle password change
+  if(newPassVal){
+    if(newPassVal.length<6){toast('Password must be at least 6 characters');return;}
+    // Store as pending reset — applied when user next logs in
+    await fbUpd('users/'+id, {pendingPasswordReset: newPassVal});
+    toast('User updated ✓ — new password will apply on their next login');
+  } else {
+    toast('User updated ✓');
   }
-  await fbUpd('users/'+id,updates);closeModal();toast('User updated');
+  closeModal();
 }
 async function delUser(id){if(USERS.filter(u=>u.role==='superadmin').length<=1&&USERS.find(u=>u.id===id)?.role==='superadmin'){toast('Cannot delete last super admin');return}await fbDel('users/'+id);closeModal();toast('Deleted')}
 

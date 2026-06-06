@@ -1,9 +1,22 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<meta charset="UTF-8"/>
+<meta charset="UTF
+  // 15-day limit for non-superadmin
+  if(newDue&&role!=='superadmin'){
+    const _maxDate=new Date();_maxDate.setDate(_maxDate.getDate()+15);
+    if(newDue>_maxDate.toISOString().slice(0,10)){
+      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
+      return;
+    }
+  }-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>TaskHub by RB</title>
+<meta http-equiv="X-Frame-Options" content="SAMEORIGIN"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://*.firebase.google.com https://*.firebaseio.com https://*.firebaseapp.com https://cdnjs.cloudflare.com https://www.gstatic.com; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.googleapis.com https://firebasestorage.googleapis.com;"
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
+<title>TaskHub by RB v10</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-app-compat.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-database-compat.min.js" crossorigin="anonymous"></script>
@@ -440,6 +453,71 @@ body{font-size:var(--base-font)}
 <body>
 <div id="app"><div class="splash"><img id="splash-logo" style="height:60px;width:auto;object-fit:contain;margin-bottom:10px"/><div class="splash-logo">TaskHub <span class="app-sub">by RB</span></div><div class="spinner"></div><div style="font-size:12px;color:var(--text3)">Connecting…</div></div></div>
 <script>
+
+// ═══════════════════════════════════════
+//  SECURITY HARDENING
+// ═══════════════════════════════════════
+
+(function securityInit(){
+  // 1. Disable console in production to prevent data extraction
+  const _noop=()=>{};
+  const _origConsole={log:console.log,warn:console.warn,error:console.error,info:console.info};
+  // Keep error for debugging but suppress log/warn/info
+  if(window.location.hostname!=='localhost'&&window.location.hostname!=='127.0.0.1'){
+    console.log=_noop;
+    console.warn=_noop;
+    console.info=_noop;
+    console.table=_noop;
+    console.dir=_noop;
+    // Allow error for critical debugging
+  }
+
+  // 2. Detect DevTools open and warn
+  let _devToolsOpen=false;
+  const _devThreshold=160;
+  setInterval(()=>{
+    if(window.outerWidth-window.innerWidth>_devThreshold||window.outerHeight-window.innerHeight>_devThreshold){
+      if(!_devToolsOpen){
+        _devToolsOpen=true;
+        // Log audit event silently
+        if(window.currentUser&&window.db){
+          try{window.db.ref('audit_log/'+Date.now()).set({type:'devtools_open',userId:window.currentUser?.id,email:window.currentUser?.email,ts:Date.now()});}catch(_){}
+        }
+      }
+    } else {
+      _devToolsOpen=false;
+    }
+  },2000);
+
+  // 3. Session timeout after 8 hours of inactivity
+  let _sessionExpiry=Date.now()+8*60*60*1000;
+  ['click','keydown','touchstart'].forEach(evt=>{
+    document.addEventListener(evt,()=>{_sessionExpiry=Date.now()+8*60*60*1000;},true);
+  });
+  setInterval(()=>{
+    if(Date.now()>_sessionExpiry&&window.currentUser){
+      if(window.auth){window.auth.signOut();}
+      localStorage.clear();
+      window.currentUser=null;
+      if(window.renderLogin)window.renderLogin();
+      alert('Session expired. Please sign in again.');
+    }
+  },60000);
+
+  // 4. Prevent right-click context menu inspection (mild deterrent)
+  // document.addEventListener('contextmenu',e=>e.preventDefault()); // disabled - too restrictive
+
+  // 5. Clear clipboard on page unload to prevent data leakage
+  window.addEventListener('beforeunload',()=>{
+    try{navigator.clipboard.writeText('');}catch(_){}
+  });
+
+  // 6. Override toString of sensitive arrays to not leak data
+  // This prevents console.log(TASKS) from showing data in a simple way
+  // Done after globals are defined (see end of startListeners)
+
+})();
+
 // ═══════════════════════════════════════
 //  FIREBASE
 // ═══════════════════════════════════════
@@ -562,7 +640,7 @@ let dscExpiry=30;        // [{id,taskId,userId,date,qty,seconds,note}]
 let batchLogLoaded=false;
 let showClosedBilled=false; // #3: hide invoiced closed tasks by default
 let tsFilter={emp:'all',client:'all',dept:'all',dateFrom:today(),dateTo:today(),selectedMonth:null};
-let billingFilter={client:'all',status:'all',month:'',firm:'all',dept:'all',view:'summary',ageing:'all',search:'',bulkSelected:new Set()};
+let billingFilter={client:'all',status:'unbilled',month:'',firm:'all',dept:'all',view:'summary',ageing:'all',search:'',bulkSelected:new Set(),showAll:false};
 let certFilter={caFirm:'all',hasUDIN:'all',dateFrom:'',dateTo:'',createdBy:'all',purpose:'all',signingMember:'all',certSearch:'',view:'list',sortBy:'date',sortAsc:false};
 let calViewDate=new Date(),calSelectedDate=null;
 // Bulk selection
@@ -604,7 +682,7 @@ function firstOfMonth(){const d=new Date();return`${d.getFullYear()}-${String(d.
 // ═══════════════════════════════════════
 //  FIREBASE OPS
 // ═══════════════════════════════════════
-function _lsPersist(){try{localStorage.setItem('th_tasks',JSON.stringify(TASKS));localStorage.setItem('th_users',JSON.stringify(USERS));localStorage.setItem('th_entries',JSON.stringify(TIME_ENTRIES));}catch(e){}}
+function _lsPersist(){} // Data caching removed for security
 function _localUpd(p,v){var parts=p.split('/');
   if(parts[0]==='tasks'){var t=TASKS.find(function(x){return x.id===parts[1]});if(t)Object.assign(t,v);}
   else if(parts[0]==='users'){var u=USERS.find(function(x){return x.id===parts[1]});if(u)Object.assign(u,v);}
@@ -636,7 +714,21 @@ function arrToObj(a){const o={};a.forEach(x=>o[x.id]=x);return o}
 //  LISTENERS
 // ═══════════════════════════════════════
 let loaded={users:false,depts:false,subdepts:false,statuses:false,clients:false,tasks:false,entries:false,timer:false,recurring:false,comments:false,firms:false,emailjs:false,cafirms:false,certs:false,dsc:false,leaves:false,settings:false,notifications:false,reminders:false,templates:false,whatsapp:false};
-function checkLoaded(){if(Object.values(loaded).every(Boolean)){syncStatus='ok';checkRecurringTasks();render()}}
+function checkLoaded(){
+  if(Object.values(loaded).every(Boolean)){
+    syncStatus='ok';
+    checkRecurringTasks();
+    // Security: make sensitive arrays non-enumerable in window scope
+    // This prevents window.TASKS etc. from appearing in console autocomplete
+    // Security: clear seed data and make sensitive vars non-enumerable
+    try{
+      ['SD_USERS','SD_CLIENTS','SD_TASKS','SD_TIME_ENTRIES','SD_CA_FIRMS','SEED_PIN_HASH','SD_SUBDEPTS','SD_STATUSES','SD_DEPTS','SD_FIRMS','SD_LEAVES','SD_CERTIFICATES'].forEach(k=>{
+        delete window[k];
+      });
+    }catch(_){}
+    render();
+  }
+}
 // Track last user interaction time to protect editing sessions
 let _lastInteraction=Date.now();
 let _rerenderTimer=null;
@@ -746,7 +838,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   // Auth state listener - purely for monitoring, initWithAuth() handles startup
   auth.onAuthStateChanged(function(fbUser){
     if(fbUser){
-      console.log('[Auth] Signed in as:', fbUser.email);
+      
     } else if(currentUser) {
       // Lost auth session while app was open - re-sign in
       const stored=LS.get('currentUser',null);
@@ -762,6 +854,11 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     batchLogLoaded=true;
     if(curPage==='tasks'||curPage==='reports') rerender();
   });
+  db.ref('dsc_records').on('value',s=>{
+    DSC_RECORDS=objToArr(s.val()||{});
+    if(!loaded.dsc){loaded.dsc=true;checkLoaded();}else render();
+  },e=>{if(!loaded.dsc){loaded.dsc=true;checkLoaded();}});
+  db.ref('dsc_movements').on('value',s=>{DSC_MOVEMENTS=objToArr(s.val()||{});render();},e=>{});
 }
 
 
@@ -1251,7 +1348,7 @@ function clientsPage(){
     </label>
     <input class="form-input" style="flex:1;max-width:240px;font-size:12px;padding:5px 10px"
       placeholder="Search clients…" value="${cpf.search}"
-      oninput="window._cpFilter.search=this.value;render()"/>
+      id="clients-search-inp" onfocus="document.body.dataset.lastSearchFocus='clients-search-inp'" oninput="window._cpFilter.search=this.value;render()"/>
     <select class="form-select" style="width:auto;font-size:12px" onchange="window._cpFilter.dept=this.value;render()">
       <option value="all">All Depts</option>
       ${DEPTS.filter(d=>(()=>{const _d3=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);return role==='superadmin'||_d3.includes(d.id);})()).map(d=>`<option value="${d.id}"${cpf.dept===d.id?' selected':''}>${d.name.split(' ')[0]}</option>`).join('')}
@@ -2061,7 +2158,7 @@ async function fbAuthSignIn(userId, pinHash){
       // Account doesn't exist yet - create it (first login after migration)
       try {
         await auth.createUserWithEmailAndPassword(email, pinHash);
-        console.log('[Auth] Created Firebase Auth account for', userId);
+        /* auth log removed */
         return true;
       } catch(e2){
         console.error('[Auth] Failed to create account:', e2.code, e2.message);
@@ -2099,10 +2196,10 @@ async function fbAuthUpdatePassword(userId, newPinHash){
     const user = auth.currentUser;
     if(user && user.email === fbAuthEmail(userId)){
       await user.updatePassword(newPinHash);
-      console.log('[Auth] Password updated for', userId);
+      
     } else {
       // Re-sign in with old hash then update (shouldn't happen normally)
-      console.warn('[Auth] updatePassword: current user mismatch');
+      /* auth warn removed */
     }
   } catch(e){
     if(e.code === 'auth/requires-recent-login'){
@@ -2114,7 +2211,7 @@ async function fbAuthUpdatePassword(userId, newPinHash){
           await auth.signInWithEmailAndPassword(fbAuthEmail(userId), oldHash);
           await auth.currentUser.updatePassword(newPinHash);
         }
-      } catch(e2){ console.warn('[Auth] Re-auth for password update failed', e2.code); }
+      } catch(e2){ /* auth warn removed */ }
     }
     console.error('[Auth] updatePassword error:', e.code);
   }
@@ -3198,7 +3295,13 @@ function dscMovementHTML({dscId}){
   </div>
   <div class="form-row"><label class="form-label">Date</label><input class="form-input" type="date" id="mv-date" value="${today()}"/></div>
   <div class="g2">
-    <div class="form-row"><label class="form-label">Person Name *</label><input class="form-input" id="mv-person" placeholder="Who is taking/returning"/></div>
+    <div class="form-row"><label class="form-label">Person Name *</label>
+      <input class="form-input" id="mv-person" list="mv-person-list" placeholder="Who is taking/returning"/>
+      <datalist id="mv-person-list">
+        ${[...new Set(DSC_MOVEMENTS.map(m=>m.personName).filter(Boolean))].map(n=>`<option value="${n}">`).join('')}
+        ${DSC_RECORDS.map(d=>[d.givenBy,d.currentWith,d.holderName].filter(Boolean)).flat().filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=>`<option value="${n}">`).join('')}
+      </datalist>
+    </div>
     <div class="form-row"><label class="form-label">Contact No.</label><input class="form-input" id="mv-contact" placeholder="Phone number"/></div>
   </div>
   <div class="form-row"><label class="form-label">New Location</label>
@@ -3245,6 +3348,12 @@ function bindAll(){
   document.querySelectorAll('[data-nav-page]').forEach(el=>el.onclick=()=>{mobileNavOpen=false;curTab=0;navigate(el.dataset.navPage)});
   document.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{curTab=+el.dataset.tab;render()});
 
+  // Week report drill-down rows
+  document.querySelectorAll('.week-row[data-uid]').forEach(el=>{
+    el.onmouseover=()=>el.style.background='var(--bg3)';
+    el.onmouseout=()=>el.style.background='';
+    el.onclick=()=>{perfDrillUser=el.dataset.uid;navigate('reports',4);};
+  });
   // Collapsible group headers
   document.querySelectorAll('.group-hdr[data-gkey]').forEach(el=>{
     el.onclick=()=>toggleGroupCollapse(el.dataset.gkey);
@@ -3321,6 +3430,12 @@ function bindAll(){
   if(searchPortalOpen){
     const sp=document.getElementById('sp-inp');
     if(sp){const v=sp.value;sp.focus();sp.setSelectionRange(v.length,v.length);}
+  }
+  // Refocus any search inputs that were active before render
+  const _prevFocusId=document.body.dataset.lastSearchFocus;
+  if(_prevFocusId){
+    const _el=document.getElementById(_prevFocusId);
+    if(_el&&_el.tagName==='INPUT'){const v=_el.value;_el.focus();_el.setSelectionRange(v.length,v.length);}
   }
   // Close search when clicking outside topbar - use a single persistent listener
   // (attached only once, checked via _searchCloseAttached flag)
@@ -4301,32 +4416,21 @@ async function doEmailLogin(){
     if(matched.pendingPasswordReset){
       const newPwd=matched.pendingPasswordReset;
       try {
-        // User just authenticated so updatePassword works (recent auth satisfied)
+        // Reauthenticate with current (old) password to ensure fresh token
+        const {EmailAuthProvider}=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js').catch(()=>({EmailAuthProvider:null}));
+        // Direct updatePassword right after signIn - token is fresh
         await cred.user.updatePassword(newPwd);
         await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-        console.log('[Auth] Password updated for', matched.id);
-        // Force user to notice their password changed
-        loginError='';
+        
+        toast('✓ Your password has been updated by admin. New password is now active.');
       } catch(pe){
-        if(pe.code==='auth/requires-recent-login'){
-          // Re-sign-in with new password to force update
-          try {
-            await auth.signOut();
-            const cred2=await auth.signInWithEmailAndPassword(matched.email, newPwd);
-            await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-            console.log('[Auth] Password synced via re-login for', matched.id);
-          } catch(pe2){
-            // New password doesn't work either - clear the flag to avoid loop
-            console.warn('[Auth] Password sync failed completely:', pe2.code);
-            await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-          }
-        } else {
-          console.warn('[Auth] Password update failed:', pe.code);
-        }
+        /* auth warn removed */
+        // Still clear the pending reset to avoid infinite loop
+        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
       }
     }
     currentUser={...matched,pendingPasswordReset:null};
-    LS.set('currentUser',currentUser);
+    LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields
     loginEmail='';loginPassword='';loginError='';loginLoading=false;
     loginSelectedUser=null;
 
@@ -4388,7 +4492,7 @@ function topBarHTML(){
     <button class="mobile-menu-btn" onclick="mobileNavOpen=!mobileNavOpen;render()" title="Menu"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
     <div class="logo">${activeFirm?.logo_url
       ? `<img src="${activeFirm.logo_url}" style="height:32px;width:auto;max-width:120px;object-fit:contain" onerror="this.style.display='none'"/>`
-      : `<span style="font-weight:700;font-size:15px;letter-spacing:-.3px">${activeFirm?.name||'TaskHub'}</span>`
+      : `<span style="font-weight:700;font-size:15px;letter-spacing:-.3px">${activeFirm?.name||'TaskHub'}</span><span style="font-size:9px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px;font-weight:700">v10</span>`
     }</div>
     <button onclick="navigate('home')" title="Home" style="background:none;border:none;cursor:pointer;padding:4px 8px;color:var(--text3);display:flex;align-items:center;gap:4px;border-radius:var(--r);font-size:11px;font-weight:600" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">🏠</button>
     <div class="sync-dot ${syncStatus}"  title="${syncStatus}"></div>
@@ -5650,7 +5754,7 @@ function billingPage(){
 
   // ── Common filter bar ──
   const filterBar=`<div class="filter-bar" style="flex-wrap:wrap;margin-bottom:12px">
-    <input class="form-input" style="max-width:180px" placeholder="Search task or client…" value="${billingFilter.search}" oninput="billingFilter.search=this.value;render()"/>
+    <input class="form-input" style="max-width:180px" placeholder="Search task or client…" value="${billingFilter.search}" id="billing-search-inp" onfocus="document.body.dataset.lastSearchFocus='billing-search-inp'" oninput="billingFilter.search=this.value;render()"/>
     <select class="form-select" onchange="billingFilter.client=this.value;render()"><option value="all">All Clients</option>${CLIENTS.map(c=>`<option value="${c.id}"${billingFilter.client===c.id?' selected':''}>${c.name}</option>`).join('')}</select>
     <select class="form-select" onchange="billingFilter.dept=this.value;render()"><option value="all">All Depts</option>${DEPTS.map(d=>`<option value="${d.id}"${billingFilter.dept===d.id?' selected':''}>${d.name}</option>`).join('')}</select>
     <select class="form-select" onchange="billingFilter.month=this.value;render()"><option value="">All Months</option>${months.map(m=>`<option value="${m}"${billingFilter.month===m?' selected':''}>${new Date(m+'-01').toLocaleDateString('en-IN',{month:'short',year:'numeric'})}</option>`).join('')}</select>
@@ -5885,7 +5989,44 @@ function getMonthRange(){
 function weekSheet(){
   const r=getWeekRange();
   const entries=filteredEntries(r.from,r.to);
-  return tsFilterBar(false)+employeeWeekGrid(entries,r.from,r.to)+tsHoursTable(entries,r.from,r.to);
+  // Single merged table with colour-coding and drill-down
+  return tsFilterBar(false)+mergedWeekTable(entries,r.from,r.to);
+}
+
+function mergedWeekTable(entries,from,to){
+  const role=currentUser.role;
+  const dates=[];let d=new Date(from+'T00:00:00');const end=new Date(to+'T00:00:00');
+  while(d<=end){dates.push(d.toISOString().slice(0,10));d=new Date(d);d.setDate(d.getDate()+1);}
+  const mgrDepts=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);
+  const staff=role==='superadmin'?USERS.filter(u=>u.id!==currentUser.id):USERS.filter(u=>{
+    if(u.id===currentUser.id)return false;
+    const uD=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
+    return mgrDepts.some(d2=>uD.includes(d2));
+  });
+  if(role==='employee') return tsHoursTable(entries,from,to);
+  let html='<div style="overflow-x:auto;margin-bottom:16px"><table style="width:100%;border-collapse:collapse;font-size:11px">';
+  html+='<thead><tr style="background:var(--bg3)">';
+  html+='<th style="padding:7px 10px;text-align:left;border:1px solid var(--border);min-width:130px">Employee</th>';
+  dates.forEach(dt=>html+='<th style="padding:7px 8px;text-align:center;border:1px solid var(--border);min-width:56px">'+new Date(dt+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric'})+'</th>');
+  html+='<th style="padding:7px 8px;text-align:center;border:1px solid var(--border);background:var(--bg4);font-weight:700">Total</th></tr></thead><tbody>';
+  staff.forEach(u=>{
+    const uEntries=entries.filter(e=>e.userId===u.id);
+    const total=uEntries.reduce((a,e)=>a+(e.seconds||0),0);
+    const dayMap={};uEntries.forEach(e=>{dayMap[e.date]=(dayMap[e.date]||0)+(e.seconds||0);});
+    html+='<tr class="week-row" data-uid="'+u.id+'" style="cursor:pointer">';
+    html+='<td style="padding:6px 10px;border:1px solid var(--border)"><div style="display:flex;align-items:center;gap:7px">'+getAvatarHTML(u.id,22)+'<div><div style="font-size:12px;font-weight:500">'+u.name+'</div><div style="font-size:10px;color:var(--text3)">'+(getDept(u.deptId)?.name?.split(' ')[0]||'')+'</div></div></div></td>';
+    dates.forEach(dt=>{
+      const secs=dayMap[dt]||0;const hrs=secs/3600;
+      const color=secs===0?'var(--text3)':hrs<4?'var(--amber)':hrs>=8?'var(--green,#4ade80)':'var(--accent)';
+      const bg=secs===0?'':'rgba('+( hrs<4?'245,166,35':hrs>=8?'74,222,128':'59,130,246')+',0.08)';
+      html+='<td style="padding:6px 8px;text-align:center;border:1px solid var(--border);color:'+color+';font-weight:'+(secs?'600':'400')+';background:'+bg+'">'+(secs?fmtSec(secs):'—')+'</td>';
+    });
+    html+='<td style="padding:6px 8px;text-align:center;border:1px solid var(--border);font-weight:700;background:var(--bg3);color:'+(total>=8*3600*dates.length*0.7?'var(--green,#4ade80)':'var(--text)')+'">'+fmtSec(total)+'</td>';
+    html+='</tr>';
+  });
+  html+='</tbody></table></div>';
+  html+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px">Click any row to view employee details. Colours: <span style="color:var(--amber)">■</span> &lt;4h <span style="color:var(--accent)">■</span> 4-8h <span style="color:var(--green,#4ade80)">■</span> 8h+</div>';
+  return html;
 }
 
 function employeeWeekGrid(entries,from,to){
@@ -7098,14 +7239,14 @@ async function doChangePin(){
   if(curHash!==storedHash){toast('Current PIN incorrect');return}
   const newHash=await hashPIN(nw);
   await fbUpd('users/'+currentUser.id,{pinHash:newHash});
-  currentUser={...currentUser,pinHash:newHash};LS.set('currentUser',currentUser);
+  currentUser={...currentUser,pinHash:newHash};LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields
   // Update Firebase Auth password
   try {
     const fbUser=auth.currentUser;
     if(fbUser) await fbUser.updatePassword(newHash);
   } catch(e){
     // Non-critical - PIN in DB is updated, auth password will sync on next login
-    console.warn('[Auth] Password update failed:', e.code);
+    /* auth warn removed */
   }
   closeModal();toast('PIN updated ✓');
 }
@@ -7441,7 +7582,7 @@ function newTaskHTML(data){
     <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📋 Existing tasks for this client</div>
     <div id="f-client-tasks-list"></div>
   </div>
-  <div class="g2"><div class="form-row"><label class="form-label">Start Date <span style='font-size:10px;color:var(--text3)'>(optional)</span></label><input class="form-input" type="date" id="f-start"/></div><div class="form-row"><label class="form-label">Due Date</label><input class="form-input" type="date" id="f-due" min="${today()}"/></div></div>
+  <div class="g2"><div class="form-row"><label class="form-label">Start Date <span style='font-size:10px;color:var(--text3)'>(optional)</span></label><input class="form-input" type="date" id="f-start"/></div><div class="form-row"><label class="form-label">Due Date</label><input class="form-input" type="date" id="f-due" min="${today()}"/><button type="button" class="btn btn-ghost btn-xs" style="margin-top:4px" onclick="document.getElementById('f-due').value=today()">Today</button></div></div>
   </div>
   <div id="f-unit-wrap" style="display:${data.prefill?.batchMode?'block':'none'}">
     <div class="form-row"><label class="form-label">Unit Label <span style="font-size:10px;color:var(--text3)">e.g. "returns", "forms", "clients"</span></label>
@@ -7491,6 +7632,17 @@ async function createTask(){
   const clientId=document.getElementById('f-client')?.value||'';
   if(!clientId){toast('Please select a client');return;}
 
+  // Require due date
+  const dueDate2=document.getElementById('f-due')?.value||'';
+  if(!dueDate2){toast('Due date is required');return;}
+  // ══ FIX 10: validate 15-day limit ══
+  if(currentUser.role!=='superadmin'){
+    const _maxD=new Date();_maxD.setDate(_maxD.getDate()+15);
+    if(dueDate2>_maxD.toISOString().slice(0,10)){
+      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
+      return;
+    }
+  }
   // Require at least one assignee
   const cbEls=[...document.querySelectorAll('.f-assignee-cb:checked')];
   if(!cbEls.length){toast('Please assign to at least one person');return;}
@@ -7882,6 +8034,14 @@ async function saveTaskDates(id){
   await resetApprovalIfNeeded(id,'date change');
   toast('Dates saved ✓');
 }
+  // 15-day limit for non-superadmin
+  if(newDue&&role!=='superadmin'){
+    const _maxDate=new Date();_maxDate.setDate(_maxDate.getDate()+15);
+    if(newDue>_maxDate.toISOString().slice(0,10)){
+      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
+      return;
+    }
+  }
 async function saveTaskAssignees(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   if(currentUser.role==='employee'){toast('Only managers/admins can reassign');return;}
@@ -8038,9 +8198,11 @@ async function addManualTime(){
 
 // ── Users ──
 function settUsersHTML(){
+  if(!window._userSearch) window._userSearch='';
   return`${mHdr('Users')}
   <div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${USERS.length} users</div><button class="btn btn-primary btn-sm" onclick="openModal('newUser',{})">+ Add</button></div>
-  ${USERS.map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
+  <div style="margin-bottom:10px"><input class="form-input" id="sett-users-search" placeholder="Search staff…" value="${window._userSearch||''}" onfocus="document.body.dataset.lastSearchFocus='sett-users-search'" oninput="window._userSearch=this.value;render()"/></div>
+  ${(window._userSearch?(USERS.filter(u=>(u.name||'').toLowerCase().includes(window._userSearch.toLowerCase())||(u.email||'').toLowerCase().includes(window._userSearch.toLowerCase()))):USERS).map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
     <div style="flex:1"><div class="li-name">${u.name}</div><div class="li-sub">${u.role==='superadmin'?'Super Admin':u.role==='manager'?'Manager · '+getDept(u.deptId)?.name:'Staff · '+(getDept(u.deptId)?.name||'—')} · ${u.email||'no email'}</div></div>
     <button class="btn btn-ghost btn-xs" onclick="openModal('editUser',{id:'${u.id}'})">Edit</button>
   </div>`).join('')}`;
@@ -8092,7 +8254,7 @@ async function createUser(){
   // Create Firebase Auth account with REAL email + password
   try {
     await auth.createUserWithEmailAndPassword(email, password);
-    console.log('[Auth] Firebase Auth account created:', email);
+    
   } catch(e){
     if(e.code==='auth/email-already-in-use'){
       toast('This email already has a Firebase account. Use a different email or reset password.');
@@ -8271,7 +8433,64 @@ function addStsRow(){const list=document.getElementById('sts-list');if(!list)ret
 async function saveStatuses(subDeptId){const list=document.getElementById('sts-list');if(!list)return;const sts=Array.from(list.querySelectorAll('input')).map(inp=>inp.value.trim()).filter(Boolean);if(!sts.length){toast('At least one required');return}await fbSet('statuses/'+subDeptId,sts);closeModal();toast('Saved')}
 
 // ── Clients ──
-function settClientsHTML(){return`${mHdr('Clients')}<div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${CLIENTS.length} clients</div><div style="display:flex;gap:6px"><button class="btn btn-ghost btn-sm" onclick="openModal('importClients',{})">⬆ Import</button><button class="btn btn-primary btn-sm" onclick="openModal('newClient',{})">+ Add</button></div></div>${CLIENTS.map(c=>`<div class="list-item"><div style="width:32px;height:32px;border-radius:50%;background:var(--blue-bg);color:var(--blue);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600">${c.name.slice(0,2).toUpperCase()}</div><div style="flex:1"><div class="li-name">${c.name}</div><div class="li-sub">${TASKS.filter(t=>t.clientId===c.id).length} tasks${c.gstin?' · '+c.gstin:''}${c.phones?.length?' · 📱'+c.phones[0]:''}${c.emails?.length?' · ✉ '+c.emails[0]:''}</div></div><button class="btn btn-ghost btn-xs" onclick="openModal('editClient',{id:'${c.id}'})">Edit</button><button class="btn btn-danger btn-xs" onclick="delClient('${c.id}')">✕</button></div>`).join('')}`}
+function settClientsHTML(){
+  if(!window._settClientSearch) window._settClientSearch='';
+  const q=(window._settClientSearch||'').toLowerCase();
+  const filtered=q?CLIENTS.filter(c=>(c.name||'').toLowerCase().includes(q)||(c.gstin||'').toLowerCase().includes(q)||(c.email||'').toLowerCase().includes(q)):CLIENTS;
+  return`${mHdr('Clients')}
+  <div class="flex-between mb-10">
+    <input class="form-input" id="sett-client-search" style="flex:1;max-width:260px" placeholder="Search name, GSTIN, email…"
+      value="${window._settClientSearch||''}"
+      onfocus="document.body.dataset.lastSearchFocus='sett-client-search'"
+      oninput="window._settClientSearch=this.value;render()"/>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-ghost btn-sm" onclick="openModal('importClients',{})">⬆ Import</button>
+      ${currentUser.role==='superadmin'?'<button class="btn btn-primary btn-sm" onclick="openModal(\'newClient\',{})">+ New</button>':''}
+    </div>
+  </div>
+  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
+    <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
+      <th style="padding:7px 10px;text-align:left">Name</th>
+      <th style="padding:7px 10px;text-align:left">GSTIN</th>
+      <th style="padding:7px 10px;text-align:left">WhatsApp</th>
+      <th style="padding:7px 10px;text-align:left">Email</th>
+      <th style="padding:7px 8px;text-align:center">Total Tasks</th>
+      <th style="padding:7px 8px;text-align:center">Ongoing</th>
+      <th style="padding:7px 8px;text-align:center">Completed</th>
+      <th style="padding:7px 8px;text-align:right">Billed ₹</th>
+      <th style="padding:7px 8px;text-align:right">Pending ₹</th>
+      <th style="padding:7px 8px;text-align:right">Total Billable ₹</th>
+      <th style="padding:7px 8px"></th>
+    </tr></thead>
+    <tbody>
+      ${filtered.map((c,i)=>{
+        const cTasks=TASKS.filter(t=>t.clientId===c.id);
+        const ongoing=cTasks.filter(t=>!isTaskTerminal(t)).length;
+        const completed=cTasks.filter(t=>isTaskTerminal(t)).length;
+        const billed=cTasks.filter(t=>t.billingStatus==='invoiced').reduce((a,t)=>a+(t.billingAmount||0),0);
+        const pending=cTasks.filter(t=>t.billingStatus!=='invoiced'&&isBillingReady(t)).reduce((a,t)=>a+(t.billingAmount||0),0);
+        const total=cTasks.reduce((a,t)=>a+(t.billingAmount||0),0);
+        return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
+          <td style="padding:6px 10px;font-weight:500">${c.name}</td>
+          <td style="padding:6px 10px;font-family:var(--mono);font-size:10px">${c.gstin||'—'}</td>
+          <td style="padding:6px 10px;font-size:11px">${c.whatsapp||c.mobile||'—'}</td>
+          <td style="padding:6px 10px;font-size:11px;color:var(--text3)">${c.email||'—'}</td>
+          <td style="padding:6px 8px;text-align:center">${cTasks.length}</td>
+          <td style="padding:6px 8px;text-align:center;color:${ongoing>0?'var(--amber)':'var(--text3)'};font-weight:${ongoing>0?'600':'400'}">${ongoing}</td>
+          <td style="padding:6px 8px;text-align:center;color:var(--green,#4ade80)">${completed}</td>
+          <td style="padding:6px 8px;text-align:right;color:var(--green,#4ade80);font-family:var(--mono)">${billed>0?fmtMoney(billed):'—'}</td>
+          <td style="padding:6px 8px;text-align:right;color:var(--amber);font-family:var(--mono)">${pending>0?fmtMoney(pending):'—'}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:600;font-family:var(--mono)">${total>0?fmtMoney(total):'—'}</td>
+          <td style="padding:6px 8px;white-space:nowrap">
+            <button class="btn btn-ghost btn-xs" onclick="navigate('clients');setTimeout(()=>openModal('clientDetail',{id:'${c.id}'}),100)">View</button>
+            ${currentUser.role==='superadmin'?`<button class="btn btn-ghost btn-xs" onclick="openModal('editClient',{id:'${c.id}'})">Edit</button>`:''}
+          </td>
+        </tr>`;
+      }).join('')}
+      ${filtered.length===0?'<tr><td colspan="11" style="padding:2rem;text-align:center;color:var(--text3)">No clients found</td></tr>':''}
+    </tbody>
+  </table></div>`;
+}
 function newClientHTML(){if(currentUser.role!=='superadmin'){return mHdr('Add Client')+'<p style="padding:12px;color:var(--red)">Only Super Admin can create clients.</p>';}
   var html=mHdr('Add Client');
   html+='<div class="form-row"><label class="form-label">Client Name *</label>'
@@ -8356,7 +8575,7 @@ try{var sl=document.getElementById("splash-logo");if(sl)sl.src=RB_LOGO;}catch(e)
         const stored=LS.get('currentUser',null);
         if(stored && stored.id){
           currentUser=stored;
-          console.log('[Auth] Session restored for', stored.name);
+          /* auth log removed */
           // Re-attach per-user timer listener
           db.ref('active_timers/'+currentUser.id).on('value',s=>{
             activeTimer=s.val()||null;

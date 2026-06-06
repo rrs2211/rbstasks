@@ -1,22 +1,9 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<meta charset="UTF
-  // 15-day limit for non-superadmin
-  if(newDue&&role!=='superadmin'){
-    const _maxDate=new Date();_maxDate.setDate(_maxDate.getDate()+15);
-    if(newDue>_maxDate.toISOString().slice(0,10)){
-      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
-      return;
-    }
-  }-8"/>
+<meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<meta http-equiv="X-Frame-Options" content="SAMEORIGIN"/>
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://*.firebase.google.com https://*.firebaseio.com https://*.firebaseapp.com https://cdnjs.cloudflare.com https://www.gstatic.com; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.googleapis.com https://firebasestorage.googleapis.com;"
-<meta http-equiv="Pragma" content="no-cache"/>
-<meta http-equiv="Expires" content="0"/>
-<title>TaskHub by RB v10</title>
+<title>TaskHub by RB</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-app-compat.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-database-compat.min.js" crossorigin="anonymous"></script>
@@ -453,71 +440,6 @@ body{font-size:var(--base-font)}
 <body>
 <div id="app"><div class="splash"><img id="splash-logo" style="height:60px;width:auto;object-fit:contain;margin-bottom:10px"/><div class="splash-logo">TaskHub <span class="app-sub">by RB</span></div><div class="spinner"></div><div style="font-size:12px;color:var(--text3)">Connecting…</div></div></div>
 <script>
-
-// ═══════════════════════════════════════
-//  SECURITY HARDENING
-// ═══════════════════════════════════════
-
-(function securityInit(){
-  // 1. Disable console in production to prevent data extraction
-  const _noop=()=>{};
-  const _origConsole={log:console.log,warn:console.warn,error:console.error,info:console.info};
-  // Keep error for debugging but suppress log/warn/info
-  if(window.location.hostname!=='localhost'&&window.location.hostname!=='127.0.0.1'){
-    console.log=_noop;
-    console.warn=_noop;
-    console.info=_noop;
-    console.table=_noop;
-    console.dir=_noop;
-    // Allow error for critical debugging
-  }
-
-  // 2. Detect DevTools open and warn
-  let _devToolsOpen=false;
-  const _devThreshold=160;
-  setInterval(()=>{
-    if(window.outerWidth-window.innerWidth>_devThreshold||window.outerHeight-window.innerHeight>_devThreshold){
-      if(!_devToolsOpen){
-        _devToolsOpen=true;
-        // Log audit event silently
-        if(window.currentUser&&window.db){
-          try{window.db.ref('audit_log/'+Date.now()).set({type:'devtools_open',userId:window.currentUser?.id,email:window.currentUser?.email,ts:Date.now()});}catch(_){}
-        }
-      }
-    } else {
-      _devToolsOpen=false;
-    }
-  },2000);
-
-  // 3. Session timeout after 8 hours of inactivity
-  let _sessionExpiry=Date.now()+8*60*60*1000;
-  ['click','keydown','touchstart'].forEach(evt=>{
-    document.addEventListener(evt,()=>{_sessionExpiry=Date.now()+8*60*60*1000;},true);
-  });
-  setInterval(()=>{
-    if(Date.now()>_sessionExpiry&&window.currentUser){
-      if(window.auth){window.auth.signOut();}
-      localStorage.clear();
-      window.currentUser=null;
-      if(window.renderLogin)window.renderLogin();
-      alert('Session expired. Please sign in again.');
-    }
-  },60000);
-
-  // 4. Prevent right-click context menu inspection (mild deterrent)
-  // document.addEventListener('contextmenu',e=>e.preventDefault()); // disabled - too restrictive
-
-  // 5. Clear clipboard on page unload to prevent data leakage
-  window.addEventListener('beforeunload',()=>{
-    try{navigator.clipboard.writeText('');}catch(_){}
-  });
-
-  // 6. Override toString of sensitive arrays to not leak data
-  // This prevents console.log(TASKS) from showing data in a simple way
-  // Done after globals are defined (see end of startListeners)
-
-})();
-
 // ═══════════════════════════════════════
 //  FIREBASE
 // ═══════════════════════════════════════
@@ -632,15 +554,11 @@ let chatDraft='';         // current message draft
 let chatLoaded=false;
 
 // ── Batch Work state ────────────────────────────────────
-let BATCH_LOGS=[];
-let DSC_RECORDS=[];
-let DSC_MOVEMENTS=[];
-let dscFilter={search:'',status:'all',expiryDays:'',tab:0};
-let dscExpiry=30;        // [{id,taskId,userId,date,qty,seconds,note}]
+let BATCH_LOGS=[];        // [{id,taskId,userId,date,qty,seconds,note}]
 let batchLogLoaded=false;
 let showClosedBilled=false; // #3: hide invoiced closed tasks by default
 let tsFilter={emp:'all',client:'all',dept:'all',dateFrom:today(),dateTo:today(),selectedMonth:null};
-let billingFilter={client:'all',status:'unbilled',month:'',firm:'all',dept:'all',view:'summary',ageing:'all',search:'',bulkSelected:new Set(),showAll:false};
+let billingFilter={client:'all',status:'all',month:'',firm:'all',dept:'all',view:'summary',ageing:'all',search:'',bulkSelected:new Set()};
 let certFilter={caFirm:'all',hasUDIN:'all',dateFrom:'',dateTo:'',createdBy:'all',purpose:'all',signingMember:'all',certSearch:'',view:'list',sortBy:'date',sortAsc:false};
 let calViewDate=new Date(),calSelectedDate=null;
 // Bulk selection
@@ -682,7 +600,7 @@ function firstOfMonth(){const d=new Date();return`${d.getFullYear()}-${String(d.
 // ═══════════════════════════════════════
 //  FIREBASE OPS
 // ═══════════════════════════════════════
-function _lsPersist(){} // Data caching removed for security
+function _lsPersist(){try{localStorage.setItem('th_tasks',JSON.stringify(TASKS));localStorage.setItem('th_users',JSON.stringify(USERS));localStorage.setItem('th_entries',JSON.stringify(TIME_ENTRIES));}catch(e){}}
 function _localUpd(p,v){var parts=p.split('/');
   if(parts[0]==='tasks'){var t=TASKS.find(function(x){return x.id===parts[1]});if(t)Object.assign(t,v);}
   else if(parts[0]==='users'){var u=USERS.find(function(x){return x.id===parts[1]});if(u)Object.assign(u,v);}
@@ -713,22 +631,8 @@ function arrToObj(a){const o={};a.forEach(x=>o[x.id]=x);return o}
 // ═══════════════════════════════════════
 //  LISTENERS
 // ═══════════════════════════════════════
-let loaded={users:false,depts:false,subdepts:false,statuses:false,clients:false,tasks:false,entries:false,timer:false,recurring:false,comments:false,firms:false,emailjs:false,cafirms:false,certs:false,dsc:false,leaves:false,settings:false,notifications:false,reminders:false,templates:false,whatsapp:false};
-function checkLoaded(){
-  if(Object.values(loaded).every(Boolean)){
-    syncStatus='ok';
-    checkRecurringTasks();
-    // Security: make sensitive arrays non-enumerable in window scope
-    // This prevents window.TASKS etc. from appearing in console autocomplete
-    // Security: clear seed data and make sensitive vars non-enumerable
-    try{
-      ['SD_USERS','SD_CLIENTS','SD_TASKS','SD_TIME_ENTRIES','SD_CA_FIRMS','SEED_PIN_HASH','SD_SUBDEPTS','SD_STATUSES','SD_DEPTS','SD_FIRMS','SD_LEAVES','SD_CERTIFICATES'].forEach(k=>{
-        delete window[k];
-      });
-    }catch(_){}
-    render();
-  }
-}
+let loaded={users:false,depts:false,subdepts:false,statuses:false,clients:false,tasks:false,entries:false,timer:false,recurring:false,comments:false,firms:false,emailjs:false,cafirms:false,certs:false,leaves:false,settings:false,notifications:false,reminders:false,templates:false,whatsapp:false};
+function checkLoaded(){if(Object.values(loaded).every(Boolean)){syncStatus='ok';checkRecurringTasks();render()}}
 // Track last user interaction time to protect editing sessions
 let _lastInteraction=Date.now();
 let _rerenderTimer=null;
@@ -753,7 +657,6 @@ document.addEventListener('keydown',(e)=>{
     case 'a': navigate('tasks',2);break;
     case 'v': navigate('reminders',1);break; // V = compliance calendar
     case 'y': navigate('calendar');break; // Y = task calendar
-    case 'x': navigate('dsc');break; // X = DSC
     case 's': if(!modalState){openSearchPortal();return;}break;
     case 'n': openModal('newTask',{prefill:getNewTaskContext()});break;
     case 'c': navigate('clients');break;
@@ -838,7 +741,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   // Auth state listener - purely for monitoring, initWithAuth() handles startup
   auth.onAuthStateChanged(function(fbUser){
     if(fbUser){
-      
+      console.log('[Auth] Signed in as:', fbUser.email);
     } else if(currentUser) {
       // Lost auth session while app was open - re-sign in
       const stored=LS.get('currentUser',null);
@@ -854,11 +757,6 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     batchLogLoaded=true;
     if(curPage==='tasks'||curPage==='reports') rerender();
   });
-  db.ref('dsc_records').on('value',s=>{
-    DSC_RECORDS=objToArr(s.val()||{});
-    if(!loaded.dsc){loaded.dsc=true;checkLoaded();}else render();
-  },e=>{if(!loaded.dsc){loaded.dsc=true;checkLoaded();}});
-  db.ref('dsc_movements').on('value',s=>{DSC_MOVEMENTS=objToArr(s.val()||{});render();},e=>{});
 }
 
 
@@ -1348,7 +1246,7 @@ function clientsPage(){
     </label>
     <input class="form-input" style="flex:1;max-width:240px;font-size:12px;padding:5px 10px"
       placeholder="Search clients…" value="${cpf.search}"
-      id="clients-search-inp" onfocus="document.body.dataset.lastSearchFocus='clients-search-inp'" oninput="window._cpFilter.search=this.value;render()"/>
+      oninput="window._cpFilter.search=this.value;render()"/>
     <select class="form-select" style="width:auto;font-size:12px" onchange="window._cpFilter.dept=this.value;render()">
       <option value="all">All Depts</option>
       ${DEPTS.filter(d=>(()=>{const _d3=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);return role==='superadmin'||_d3.includes(d.id);})()).map(d=>`<option value="${d.id}"${cpf.dept===d.id?' selected':''}>${d.name.split(' ')[0]}</option>`).join('')}
@@ -2158,7 +2056,7 @@ async function fbAuthSignIn(userId, pinHash){
       // Account doesn't exist yet - create it (first login after migration)
       try {
         await auth.createUserWithEmailAndPassword(email, pinHash);
-        /* auth log removed */
+        console.log('[Auth] Created Firebase Auth account for', userId);
         return true;
       } catch(e2){
         console.error('[Auth] Failed to create account:', e2.code, e2.message);
@@ -2196,10 +2094,10 @@ async function fbAuthUpdatePassword(userId, newPinHash){
     const user = auth.currentUser;
     if(user && user.email === fbAuthEmail(userId)){
       await user.updatePassword(newPinHash);
-      
+      console.log('[Auth] Password updated for', userId);
     } else {
       // Re-sign in with old hash then update (shouldn't happen normally)
-      /* auth warn removed */
+      console.warn('[Auth] updatePassword: current user mismatch');
     }
   } catch(e){
     if(e.code === 'auth/requires-recent-login'){
@@ -2211,7 +2109,7 @@ async function fbAuthUpdatePassword(userId, newPinHash){
           await auth.signInWithEmailAndPassword(fbAuthEmail(userId), oldHash);
           await auth.currentUser.updatePassword(newPinHash);
         }
-      } catch(e2){ /* auth warn removed */ }
+      } catch(e2){ console.warn('[Auth] Re-auth for password update failed', e2.code); }
     }
     console.error('[Auth] updatePassword error:', e.code);
   }
@@ -2961,384 +2859,6 @@ function previewNextCertNo(){
   }
 }
 
-
-// ═══════════════════════════════════════
-//  DSC MANAGEMENT MODULE
-// ═══════════════════════════════════════
-
-function nextDscSerial(){
-  if(!DSC_RECORDS.length) return 'DSC-001';
-  const serials=DSC_RECORDS.map(d=>{
-    const m=(d.serial||'').match(/DSC-(\d+)/);
-    return m?parseInt(m[1],10):0;
-  });
-  return 'DSC-'+String(Math.max(...serials)+1).padStart(3,'0');
-}
-
-function dscStatus(d){
-  if(!d.active) return 'inactive';
-  if(d.location==='office') return 'in_office';
-  if(d.location==='client') return 'with_client';
-  if(d.location==='cs') return 'with_cs';
-  return 'unknown';
-}
-
-function dscStatusBadge(d){
-  const s=dscStatus(d);
-  const map={
-    in_office: ['🏢 In Office','var(--green,#4ade80)','var(--green-bg)'],
-    with_client: ['👤 With Client','var(--amber)','var(--amber-bg)'],
-    with_cs: ['💼 With CS','var(--blue)','var(--blue-bg)'],
-    inactive: ['❌ Inactive','var(--text3)','var(--bg3)'],
-    unknown: ['❓ Unknown','var(--text3)','var(--bg3)'],
-  };
-  const [label,color,bg]=map[s]||map.unknown;
-  return `<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:${bg};color:${color};font-weight:600">${label}</span>`;
-}
-
-function dscExpiryBadge(d){
-  if(!d.expiryDate) return '';
-  const now=new Date();now.setHours(0,0,0,0);
-  const exp=new Date(d.expiryDate+'T00:00:00');
-  const days=Math.floor((exp-now)/86400000);
-  if(days<0) return '<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:var(--red-bg);color:var(--red);font-weight:600">⚠ Expired '+(Math.abs(days))+'d ago</span>';
-  if(days<=7) return '<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:var(--red-bg);color:var(--red);font-weight:600">⚠ Expires in '+days+'d</span>';
-  if(days<=30) return '<span style="font-size:10px;padding:2px 8px;border-radius:99px;background:var(--amber-bg);color:var(--amber);font-weight:600">Expires in '+days+'d</span>';
-  return '<span style="font-size:10px;color:var(--text3)">Exp: '+fmtDate(d.expiryDate)+'</span>';
-}
-
-function dscPage(){
-  const isAdmin=currentUser.role==='superadmin'||currentUser.role==='manager';
-  const tabs=['📋 Inventory','📦 Movement Log','⚠ Expiry Alert','➕ New DSC'];
-  const curTab=dscFilter.tab||0;
-
-  // ── Inventory ──
-  if(curTab===0){
-    let records=[...DSC_RECORDS];
-    if(dscFilter.search){
-      const q=dscFilter.search.toLowerCase();
-      records=records.filter(d=>(d.serial||'').toLowerCase().includes(q)||(d.company||'').toLowerCase().includes(q)||(d.holderName||'').toLowerCase().includes(q)||(d.panNo||'').toLowerCase().includes(q));
-    }
-    if(dscFilter.status!=='all') records=records.filter(d=>dscStatus(d)===dscFilter.status);
-
-    const inOffice=DSC_RECORDS.filter(d=>dscStatus(d)==='in_office').length;
-    const withClient=DSC_RECORDS.filter(d=>dscStatus(d)==='with_client').length;
-    const withCs=DSC_RECORDS.filter(d=>dscStatus(d)==='with_cs').length;
-    const expiringSoon=DSC_RECORDS.filter(d=>{if(!d.expiryDate)return false;const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-new Date())/86400000);return days>=0&&days<=30;}).length;
-
-    return `<div class="page-header"><div class="page-title">DSC Management</div>
-      ${isAdmin?`<button class="btn btn-primary btn-sm" onclick="dscFilter.tab=3;render()">+ New DSC</button>`:''}
-    </div>
-    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${curTab===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div>
-
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:16px">
-      <div class="stat-card" style="border-top:3px solid var(--green,#4ade80)"><div class="sc-label">In Office</div><div class="sc-val" style="color:var(--green,#4ade80)">${inOffice}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--amber)"><div class="sc-label">With Client</div><div class="sc-val" style="color:var(--amber)">${withClient}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--blue)"><div class="sc-label">With CS</div><div class="sc-val" style="color:var(--blue)">${withCs}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--red)"><div class="sc-label">Expiring ≤30d</div><div class="sc-val" style="color:var(--red)">${expiringSoon}</div></div>
-      <div class="stat-card"><div class="sc-label">Total</div><div class="sc-val">${DSC_RECORDS.length}</div></div>
-    </div>
-
-    <div class="filter-bar" style="margin-bottom:12px;flex-wrap:wrap">
-      <input class="form-input" style="max-width:200px" placeholder="Search serial, company, PAN…" value="${dscFilter.search}" oninput="dscFilter.search=this.value;render()"/>
-      <select class="form-select" onchange="dscFilter.status=this.value;render()">
-        <option value="all">All Status</option>
-        <option value="in_office"${dscFilter.status==='in_office'?' selected':''}>🏢 In Office</option>
-        <option value="with_client"${dscFilter.status==='with_client'?' selected':''}>👤 With Client</option>
-        <option value="with_cs"${dscFilter.status==='with_cs'?' selected':''}>💼 With CS</option>
-        <option value="inactive"${dscFilter.status==='inactive'?' selected':''}>❌ Inactive</option>
-      </select>
-    </div>
-
-    <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left">Serial</th>
-        <th style="padding:8px 10px;text-align:left">Company / Holder</th>
-        <th style="padding:8px 10px;text-align:left">PAN / Class</th>
-        <th style="padding:8px 10px;text-align:left">Location</th>
-        <th style="padding:8px 10px;text-align:left">Entry Date</th>
-        <th style="padding:8px 10px;text-align:left">Expiry</th>
-        <th style="padding:8px 10px;text-align:left">Status</th>
-        <th style="padding:8px 10px"></th>
-      </tr></thead>
-      <tbody>
-        ${records.length?records.map((d,i)=>`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-          <td style="padding:7px 10px;font-family:var(--mono);font-weight:600;color:var(--accent)">${d.serial||'—'}</td>
-          <td style="padding:7px 10px"><div style="font-weight:500">${d.company||'—'}</div><div style="font-size:10px;color:var(--text3)">${d.holderName||''}</div></td>
-          <td style="padding:7px 10px"><div>${d.panNo||'—'}</div><div style="font-size:10px;color:var(--text3)">${d.dscClass||''}</div></td>
-          <td style="padding:7px 10px">${d.currentWith?`<div style="font-size:11px;font-weight:500">${d.currentWith}</div>`:''}</td>
-          <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${d.entryDate?fmtDate(d.entryDate):'—'}</td>
-          <td style="padding:7px 10px">${dscExpiryBadge(d)}</td>
-          <td style="padding:7px 10px">${dscStatusBadge(d)}</td>
-          <td style="padding:7px 10px;white-space:nowrap">
-            <button class="btn btn-ghost btn-xs" onclick="openModal('dscDetail',{id:'${d.id}'})">View</button>
-            ${isAdmin?`<button class="btn btn-primary btn-xs" onclick="openModal('dscMovement',{dscId:'${d.id}'})">Move</button>`:''}
-          </td>
-        </tr>`).join(''):'<tr><td colspan="8" style="padding:3rem;text-align:center;color:var(--text3)">No DSC records found</td></tr>'}
-      </tbody>
-    </table>
-    </div>`;
-  }
-
-  // ── Movement Log ──
-  if(curTab===1){
-    const movements=[...DSC_MOVEMENTS].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-    return `<div class="page-header"><div class="page-title">DSC Management</div></div>
-    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${curTab===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div>
-    <div class="section-label">Movement Log (${movements.length} entries)</div>
-    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left">Date</th>
-        <th style="padding:8px 10px;text-align:left">Serial</th>
-        <th style="padding:8px 10px;text-align:left">Company</th>
-        <th style="padding:8px 10px;text-align:left">Movement</th>
-        <th style="padding:8px 10px;text-align:left">Taken By / Given To</th>
-        <th style="padding:8px 10px;text-align:left">Contact</th>
-        <th style="padding:8px 10px;text-align:left">Recorded By</th>
-        <th style="padding:8px 10px;text-align:left">Remarks</th>
-      </tr></thead>
-      <tbody>
-        ${movements.length?movements.map((m,i)=>{
-          const dsc=DSC_RECORDS.find(d=>d.id===m.dscId);
-          const dir=m.direction==='out'?'<span style="color:var(--amber);font-weight:600">→ Out</span>':'<span style="color:var(--green,#4ade80);font-weight:600">← In</span>';
-          return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-            <td style="padding:7px 10px;font-size:11px">${m.date?fmtDate(m.date):'—'}</td>
-            <td style="padding:7px 10px;font-family:var(--mono);color:var(--accent)">${dsc?.serial||m.dscId||'—'}</td>
-            <td style="padding:7px 10px;font-weight:500">${dsc?.company||'—'}</td>
-            <td style="padding:7px 10px">${dir}</td>
-            <td style="padding:7px 10px">${m.personName||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${m.contact||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${getUser(m.recordedBy)?.name||currentUser.name}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${m.remarks||'—'}</td>
-          </tr>`;
-        }).join(''):'<tr><td colspan="8" style="padding:3rem;text-align:center;color:var(--text3)">No movements recorded</td></tr>'}
-      </tbody>
-    </table></div>`;
-  }
-
-  // ── Expiry Alert ──
-  if(curTab===2){
-    const expiryDays=dscExpiry||30;
-    const now=new Date();now.setHours(0,0,0,0);
-    const expiring=DSC_RECORDS.filter(d=>{
-      if(!d.expiryDate) return false;
-      const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000);
-      return days<=expiryDays;
-    }).sort((a,b)=>a.expiryDate.localeCompare(b.expiryDate));
-    return `<div class="page-header"><div class="page-title">DSC Management</div></div>
-    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${curTab===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div>
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-      <span style="font-size:13px;font-weight:600">Show DSCs expiring within:</span>
-      <input type="number" class="form-input" value="${expiryDays}" min="1" max="365"
-        style="width:80px" onchange="dscExpiry=parseInt(this.value)||30;render()"/>
-      <span style="font-size:13px">days</span>
-      <span style="font-size:12px;color:var(--red);font-weight:600">${expiring.filter(d=>Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000)<0).length} already expired</span>
-    </div>
-    ${expiring.length?`<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-      ${expiring.map(d=>{
-        const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000);
-        const bg=days<0?'var(--red-bg)':days<=7?'rgba(239,68,68,.05)':'transparent';
-        return `<div style="display:grid;grid-template-columns:auto 1fr auto auto auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);background:${bg}">
-          <div style="font-family:var(--mono);font-weight:700;color:var(--accent)">${d.serial}</div>
-          <div><div style="font-weight:500">${d.company}</div><div style="font-size:11px;color:var(--text3)">${d.holderName||''} · PAN: ${d.panNo||'—'}</div></div>
-          ${dscStatusBadge(d)}
-          ${dscExpiryBadge(d)}
-          ${isAdmin?`<button class="btn btn-ghost btn-xs" onclick="openModal('dscDetail',{id:'${d.id}'})">View</button>`:''}
-        </div>`;
-      }).join('')}
-    </div>`:'<div style="text-align:center;padding:3rem;color:var(--text3)">✓ No DSCs expiring within '+expiryDays+' days</div>'}`;
-  }
-
-  // ── New DSC ──
-  if(curTab===3){
-    if(!isAdmin) return `<div class="page-header"><div class="page-title">DSC Management</div></div><div class="tabs">${tabs.map((t,i)=>`<div class="tab${curTab===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div><div style="text-align:center;padding:3rem;color:var(--red)">Only managers/admins can add DSC records.</div>`;
-    const nextSerial=nextDscSerial();
-    return `<div class="page-header"><div class="page-title">DSC Management</div></div>
-    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${curTab===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div>
-    <div style="max-width:600px;margin:0 auto">
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-        <div style="background:var(--bg3);padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-          <span style="font-weight:600;font-size:13px">New DSC Record</span>
-          <span style="font-family:var(--mono);font-weight:700;color:var(--accent);font-size:14px">${nextSerial}</span>
-        </div>
-        <div style="padding:16px">
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Company Name *</label><input class="form-input" id="dsc-company" placeholder="ABC Pvt Ltd" autofocus/></div>
-            <div class="form-row"><label class="form-label">PAN No.</label><input class="form-input" id="dsc-pan" placeholder="AAABC1234D" maxlength="10" style="text-transform:uppercase"/></div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Holder Name</label><input class="form-input" id="dsc-holder" placeholder="Authorised person name"/></div>
-            <div class="form-row"><label class="form-label">DSC Class</label>
-              <select class="form-select" id="dsc-class">
-                <option>Class 2</option><option>Class 3</option><option>DGFT</option><option>Organisation</option>
-              </select>
-            </div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Entry Date *</label><input class="form-input" type="date" id="dsc-entry-date" value="${today()}"/></div>
-            <div class="form-row"><label class="form-label">Expiry Date</label><input class="form-input" type="date" id="dsc-expiry"/></div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Given By (person)</label><input class="form-input" id="dsc-given-by" placeholder="Name of person who gave DSC"/></div>
-            <div class="form-row"><label class="form-label">Given By Contact</label><input class="form-input" id="dsc-given-contact" placeholder="Phone number"/></div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Current Location</label>
-              <select class="form-select" id="dsc-location">
-                <option value="office">🏢 In Office</option>
-                <option value="cs">💼 With CS</option>
-                <option value="client">👤 With Client</option>
-              </select>
-            </div>
-            <div class="form-row"><label class="form-label">Currently With</label><input class="form-input" id="dsc-current-with" placeholder="Name / team holding DSC"/></div>
-          </div>
-          <div class="form-row"><label class="form-label">DSC Password <span style="font-size:10px;color:var(--red)">(sensitive — stored encrypted)</span></label>
-            <input class="form-input" id="dsc-password" type="password" placeholder="Token password (optional)" autocomplete="off"/>
-          </div>
-          <div class="form-row"><label class="form-label">Remarks</label><input class="form-input" id="dsc-remarks" placeholder="Any notes about this DSC"/></div>
-          <button class="btn btn-primary w-full" style="margin-top:8px" onclick="saveDscRecord()">Save DSC Record</button>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  return `<div class="page-header"><div class="page-title">DSC Management</div></div>`;
-}
-
-async function saveDscRecord(){
-  const company=(document.getElementById('dsc-company')?.value||'').trim();
-  if(!company){toast('Company name is required');return;}
-  const entryDate=document.getElementById('dsc-entry-date')?.value||today();
-  const id=uid();
-  const serial=nextDscSerial();
-  const rec={
-    id, serial, company,
-    panNo:(document.getElementById('dsc-pan')?.value||'').trim().toUpperCase(),
-    holderName:(document.getElementById('dsc-holder')?.value||'').trim(),
-    dscClass:document.getElementById('dsc-class')?.value||'Class 3',
-    entryDate,
-    expiryDate:document.getElementById('dsc-expiry')?.value||'',
-    givenBy:(document.getElementById('dsc-given-by')?.value||'').trim(),
-    givenByContact:(document.getElementById('dsc-given-contact')?.value||'').trim(),
-    location:document.getElementById('dsc-location')?.value||'office',
-    currentWith:(document.getElementById('dsc-current-with')?.value||'').trim(),
-    password:(document.getElementById('dsc-password')?.value||''),
-    remarks:(document.getElementById('dsc-remarks')?.value||'').trim(),
-    active:true,
-    createdBy:currentUser.id,
-    createdAt:today()
-  };
-  await fbSet('dsc_records/'+id, rec);
-  // Log initial movement
-  const movId=uid();
-  await fbSet('dsc_movements/'+movId,{
-    id:movId, dscId:id, date:entryDate,
-    direction:'in',
-    personName:rec.givenBy||'—',
-    contact:rec.givenByContact||'',
-    location:rec.location,
-    recordedBy:currentUser.id,
-    remarks:'Initial entry — '+rec.company,
-    createdAt:today()
-  });
-  dscFilter.tab=0;
-  toast('DSC '+serial+' added ✓');
-  render();
-}
-
-function dscDetailHTML({id}){
-  const d=DSC_RECORDS.find(x=>x.id===id);
-  if(!d) return mHdr('DSC Not Found')+'<p style="padding:12px;color:var(--red)">Record not found</p>';
-  const moves=DSC_MOVEMENTS.filter(m=>m.dscId===id).sort((a,b)=>b.date.localeCompare(a.date));
-  const isAdmin=currentUser.role==='superadmin'||currentUser.role==='manager';
-  return `${mHdr(d.serial+' — '+d.company)}
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;background:var(--bg3);padding:12px;border-radius:var(--r)">
-    <div><div style="font-size:10px;color:var(--text3)">COMPANY</div><div style="font-weight:600">${d.company}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">PAN</div><div style="font-weight:600;font-family:var(--mono)">${d.panNo||'—'}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">HOLDER</div><div>${d.holderName||'—'}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">CLASS</div><div>${d.dscClass||'—'}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">ENTRY DATE</div><div>${d.entryDate?fmtDate(d.entryDate):'—'}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">EXPIRY</div><div>${dscExpiryBadge(d)||fmtDate(d.expiryDate)||'—'}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">STATUS</div><div>${dscStatusBadge(d)}</div></div>
-    <div><div style="font-size:10px;color:var(--text3)">CURRENTLY WITH</div><div>${d.currentWith||'—'}</div></div>
-    ${d.givenBy?`<div><div style="font-size:10px;color:var(--text3)">GIVEN BY</div><div>${d.givenBy}</div></div>`:''}
-    ${d.givenByContact?`<div><div style="font-size:10px;color:var(--text3)">CONTACT</div><div>${d.givenByContact}</div></div>`:''}
-    ${d.remarks?`<div style="grid-column:1/-1"><div style="font-size:10px;color:var(--text3)">REMARKS</div><div>${d.remarks}</div></div>`:''}
-    ${isAdmin&&d.password?`<div style="grid-column:1/-1"><div style="font-size:10px;color:var(--red)">DSC PASSWORD</div><div style="font-family:var(--mono);background:var(--bg2);padding:4px 8px;border-radius:var(--r);letter-spacing:2px">${d.password}</div></div>`:''}
-  </div>
-  <div class="section-label">Movement History</div>
-  ${moves.length?moves.map(m=>`<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-    <div style="font-size:11px;color:var(--text3);min-width:75px">${m.date?fmtDate(m.date):'—'}</div>
-    <div style="flex:1">
-      <div style="font-size:12px;font-weight:500">${m.direction==='out'?'→ Out to':'← In from'} ${m.personName||'—'}</div>
-      ${m.contact?`<div style="font-size:10px;color:var(--text3)">Contact: ${m.contact}</div>`:''}
-      ${m.remarks?`<div style="font-size:10px;color:var(--text3)">${m.remarks}</div>`:''}
-    </div>
-    <div style="font-size:10px;color:var(--text3)">${getUser(m.recordedBy)?.name||currentUser.name}</div>
-  </div>`).join(''):'<div style="color:var(--text3);font-size:12px;padding:8px 0">No movements recorded</div>'}
-  ${isAdmin?`<button class="btn btn-primary w-full mt-8" onclick="closeModal();openModal('dscMovement',{dscId:'${id}'})">+ Record Movement</button>`:''}`;
-}
-
-function dscMovementHTML({dscId}){
-  const d=DSC_RECORDS.find(x=>x.id===dscId);
-  if(!d) return mHdr('Movement')+'<p style="padding:12px;color:var(--red)">DSC not found</p>';
-  const isOut=d.location==='office'||d.location==='cs';
-  return `${mHdr('Record Movement — '+d.serial)}
-  <div style="background:var(--bg3);padding:8px 12px;border-radius:var(--r);margin-bottom:12px;font-size:12px">
-    <b>${d.company}</b> · ${d.holderName||''} · Currently: ${dscStatusBadge(d)}
-  </div>
-  <div class="form-row"><label class="form-label">Movement Type</label>
-    <select class="form-select" id="mv-direction">
-      ${isOut?'<option value="out" selected>→ Out (giving to someone)</option><option value="in">← In (returning to office)</option>':'<option value="in" selected>← In (returning to office)</option><option value="out">→ Out (giving to someone)</option>'}
-    </select>
-  </div>
-  <div class="form-row"><label class="form-label">Date</label><input class="form-input" type="date" id="mv-date" value="${today()}"/></div>
-  <div class="g2">
-    <div class="form-row"><label class="form-label">Person Name *</label>
-      <input class="form-input" id="mv-person" list="mv-person-list" placeholder="Who is taking/returning"/>
-      <datalist id="mv-person-list">
-        ${[...new Set(DSC_MOVEMENTS.map(m=>m.personName).filter(Boolean))].map(n=>`<option value="${n}">`).join('')}
-        ${DSC_RECORDS.map(d=>[d.givenBy,d.currentWith,d.holderName].filter(Boolean)).flat().filter((v,i,a)=>v&&a.indexOf(v)===i).map(n=>`<option value="${n}">`).join('')}
-      </datalist>
-    </div>
-    <div class="form-row"><label class="form-label">Contact No.</label><input class="form-input" id="mv-contact" placeholder="Phone number"/></div>
-  </div>
-  <div class="form-row"><label class="form-label">New Location</label>
-    <select class="form-select" id="mv-location">
-      <option value="office">🏢 In Office</option>
-      <option value="cs" ${d.location!=='cs'?'':''}>💼 With CS</option>
-      <option value="client">👤 With Client</option>
-    </select>
-  </div>
-  <div class="form-row"><label class="form-label">Remarks</label><input class="form-input" id="mv-remarks" placeholder="Purpose, task reference, etc."/></div>
-  <button class="btn btn-primary w-full mt-8" onclick="saveDscMovement('${dscId}')">Save Movement</button>`;
-}
-
-async function saveDscMovement(dscId){
-  const person=(document.getElementById('mv-person')?.value||'').trim();
-  if(!person){toast('Person name required');return;}
-  const direction=document.getElementById('mv-direction')?.value||'out';
-  const location=document.getElementById('mv-location')?.value||'office';
-  const date=document.getElementById('mv-date')?.value||today();
-  const movId=uid();
-  await fbSet('dsc_movements/'+movId,{
-    id:movId, dscId, date, direction,
-    personName:person,
-    contact:document.getElementById('mv-contact')?.value||'',
-    location,
-    recordedBy:currentUser.id,
-    remarks:document.getElementById('mv-remarks')?.value||'',
-    createdAt:today()
-  });
-  await fbUpd('dsc_records/'+dscId,{
-    location,
-    currentWith:person
-  });
-  closeModal();
-  toast(`Movement recorded — DSC ${direction==='out'?'issued to':'returned from'} ${person} ✓`);
-}
-
 // ═══════════════════════════════════════
 //  BIND ALL
 // ═══════════════════════════════════════
@@ -3348,12 +2868,6 @@ function bindAll(){
   document.querySelectorAll('[data-nav-page]').forEach(el=>el.onclick=()=>{mobileNavOpen=false;curTab=0;navigate(el.dataset.navPage)});
   document.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{curTab=+el.dataset.tab;render()});
 
-  // Week report drill-down rows
-  document.querySelectorAll('.week-row[data-uid]').forEach(el=>{
-    el.onmouseover=()=>el.style.background='var(--bg3)';
-    el.onmouseout=()=>el.style.background='';
-    el.onclick=()=>{perfDrillUser=el.dataset.uid;navigate('reports',4);};
-  });
   // Collapsible group headers
   document.querySelectorAll('.group-hdr[data-gkey]').forEach(el=>{
     el.onclick=()=>toggleGroupCollapse(el.dataset.gkey);
@@ -3430,12 +2944,6 @@ function bindAll(){
   if(searchPortalOpen){
     const sp=document.getElementById('sp-inp');
     if(sp){const v=sp.value;sp.focus();sp.setSelectionRange(v.length,v.length);}
-  }
-  // Refocus any search inputs that were active before render
-  const _prevFocusId=document.body.dataset.lastSearchFocus;
-  if(_prevFocusId){
-    const _el=document.getElementById(_prevFocusId);
-    if(_el&&_el.tagName==='INPUT'){const v=_el.value;_el.focus();_el.setSelectionRange(v.length,v.length);}
   }
   // Close search when clicking outside topbar - use a single persistent listener
   // (attached only once, checked via _searchCloseAttached flag)
@@ -4414,23 +3922,14 @@ async function doEmailLogin(){
     // Logged in successfully
     // Handle pending password reset set by admin
     if(matched.pendingPasswordReset){
-      const newPwd=matched.pendingPasswordReset;
       try {
-        // Reauthenticate with current (old) password to ensure fresh token
-        const {EmailAuthProvider}=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js').catch(()=>({EmailAuthProvider:null}));
-        // Direct updatePassword right after signIn - token is fresh
-        await cred.user.updatePassword(newPwd);
+        await cred.user.updatePassword(matched.pendingPasswordReset);
         await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-        
-        toast('✓ Your password has been updated by admin. New password is now active.');
-      } catch(pe){
-        /* auth warn removed */
-        // Still clear the pending reset to avoid infinite loop
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-      }
+        console.log('[Auth] Pending password applied for', matched.id);
+      } catch(pe){ console.warn('[Auth] Pending password apply failed:', pe.code); }
     }
     currentUser={...matched,pendingPasswordReset:null};
-    LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields
+    LS.set('currentUser',currentUser);
     loginEmail='';loginPassword='';loginError='';loginLoading=false;
     loginSelectedUser=null;
 
@@ -4492,7 +3991,7 @@ function topBarHTML(){
     <button class="mobile-menu-btn" onclick="mobileNavOpen=!mobileNavOpen;render()" title="Menu"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
     <div class="logo">${activeFirm?.logo_url
       ? `<img src="${activeFirm.logo_url}" style="height:32px;width:auto;max-width:120px;object-fit:contain" onerror="this.style.display='none'"/>`
-      : `<span style="font-weight:700;font-size:15px;letter-spacing:-.3px">${activeFirm?.name||'TaskHub'}</span><span style="font-size:9px;background:var(--accent);color:#fff;padding:1px 5px;border-radius:3px;margin-left:6px;font-weight:700">v10</span>`
+      : `<span style="font-weight:700;font-size:15px;letter-spacing:-.3px">${activeFirm?.name||'TaskHub'}</span>`
     }</div>
     <button onclick="navigate('home')" title="Home" style="background:none;border:none;cursor:pointer;padding:4px 8px;color:var(--text3);display:flex;align-items:center;gap:4px;border-radius:var(--r);font-size:11px;font-weight:600" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">🏠</button>
     <div class="sync-dot ${syncStatus}"  title="${syncStatus}"></div>
@@ -4558,7 +4057,6 @@ function sideNavHTML(){
 
     {id:'chat',label:'Messages',show:false,badge:totalUnreadCount()||0,icon:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'},
     {id:'calendar',label:'Calendar',icon:'<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',color:'var(--teal)'},
-    {id:'dsc',label:'DSC',icon:'<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',color:'var(--purple)'},
     {id:'summary',label:'Daily Summary',icon:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="14" x2="21" y2="14"/>'},
 
     {id:'reminders-list',label:'Reminders',icon:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'},
@@ -4609,7 +4107,6 @@ function pageHTML(){
   if(curPage==='drill')return drillPage();
   if(curPage==='calendar')return calendarPage();
   if(curPage==='certs')return certsPage();
-  if(curPage==='dsc')return dscPage();
   if(curPage==='billing')return billingPage();
   if(curPage==='timesheets'){curPage='reports';return reportsPage();}
   if(curPage==='reports')return reportsPage();
@@ -5754,7 +5251,7 @@ function billingPage(){
 
   // ── Common filter bar ──
   const filterBar=`<div class="filter-bar" style="flex-wrap:wrap;margin-bottom:12px">
-    <input class="form-input" style="max-width:180px" placeholder="Search task or client…" value="${billingFilter.search}" id="billing-search-inp" onfocus="document.body.dataset.lastSearchFocus='billing-search-inp'" oninput="billingFilter.search=this.value;render()"/>
+    <input class="form-input" style="max-width:180px" placeholder="Search task or client…" value="${billingFilter.search}" oninput="billingFilter.search=this.value;render()"/>
     <select class="form-select" onchange="billingFilter.client=this.value;render()"><option value="all">All Clients</option>${CLIENTS.map(c=>`<option value="${c.id}"${billingFilter.client===c.id?' selected':''}>${c.name}</option>`).join('')}</select>
     <select class="form-select" onchange="billingFilter.dept=this.value;render()"><option value="all">All Depts</option>${DEPTS.map(d=>`<option value="${d.id}"${billingFilter.dept===d.id?' selected':''}>${d.name}</option>`).join('')}</select>
     <select class="form-select" onchange="billingFilter.month=this.value;render()"><option value="">All Months</option>${months.map(m=>`<option value="${m}"${billingFilter.month===m?' selected':''}>${new Date(m+'-01').toLocaleDateString('en-IN',{month:'short',year:'numeric'})}</option>`).join('')}</select>
@@ -5989,44 +5486,7 @@ function getMonthRange(){
 function weekSheet(){
   const r=getWeekRange();
   const entries=filteredEntries(r.from,r.to);
-  // Single merged table with colour-coding and drill-down
-  return tsFilterBar(false)+mergedWeekTable(entries,r.from,r.to);
-}
-
-function mergedWeekTable(entries,from,to){
-  const role=currentUser.role;
-  const dates=[];let d=new Date(from+'T00:00:00');const end=new Date(to+'T00:00:00');
-  while(d<=end){dates.push(d.toISOString().slice(0,10));d=new Date(d);d.setDate(d.getDate()+1);}
-  const mgrDepts=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);
-  const staff=role==='superadmin'?USERS.filter(u=>u.id!==currentUser.id):USERS.filter(u=>{
-    if(u.id===currentUser.id)return false;
-    const uD=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
-    return mgrDepts.some(d2=>uD.includes(d2));
-  });
-  if(role==='employee') return tsHoursTable(entries,from,to);
-  let html='<div style="overflow-x:auto;margin-bottom:16px"><table style="width:100%;border-collapse:collapse;font-size:11px">';
-  html+='<thead><tr style="background:var(--bg3)">';
-  html+='<th style="padding:7px 10px;text-align:left;border:1px solid var(--border);min-width:130px">Employee</th>';
-  dates.forEach(dt=>html+='<th style="padding:7px 8px;text-align:center;border:1px solid var(--border);min-width:56px">'+new Date(dt+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric'})+'</th>');
-  html+='<th style="padding:7px 8px;text-align:center;border:1px solid var(--border);background:var(--bg4);font-weight:700">Total</th></tr></thead><tbody>';
-  staff.forEach(u=>{
-    const uEntries=entries.filter(e=>e.userId===u.id);
-    const total=uEntries.reduce((a,e)=>a+(e.seconds||0),0);
-    const dayMap={};uEntries.forEach(e=>{dayMap[e.date]=(dayMap[e.date]||0)+(e.seconds||0);});
-    html+='<tr class="week-row" data-uid="'+u.id+'" style="cursor:pointer">';
-    html+='<td style="padding:6px 10px;border:1px solid var(--border)"><div style="display:flex;align-items:center;gap:7px">'+getAvatarHTML(u.id,22)+'<div><div style="font-size:12px;font-weight:500">'+u.name+'</div><div style="font-size:10px;color:var(--text3)">'+(getDept(u.deptId)?.name?.split(' ')[0]||'')+'</div></div></div></td>';
-    dates.forEach(dt=>{
-      const secs=dayMap[dt]||0;const hrs=secs/3600;
-      const color=secs===0?'var(--text3)':hrs<4?'var(--amber)':hrs>=8?'var(--green,#4ade80)':'var(--accent)';
-      const bg=secs===0?'':'rgba('+( hrs<4?'245,166,35':hrs>=8?'74,222,128':'59,130,246')+',0.08)';
-      html+='<td style="padding:6px 8px;text-align:center;border:1px solid var(--border);color:'+color+';font-weight:'+(secs?'600':'400')+';background:'+bg+'">'+(secs?fmtSec(secs):'—')+'</td>';
-    });
-    html+='<td style="padding:6px 8px;text-align:center;border:1px solid var(--border);font-weight:700;background:var(--bg3);color:'+(total>=8*3600*dates.length*0.7?'var(--green,#4ade80)':'var(--text)')+'">'+fmtSec(total)+'</td>';
-    html+='</tr>';
-  });
-  html+='</tbody></table></div>';
-  html+='<div style="font-size:10px;color:var(--text3);margin-bottom:8px">Click any row to view employee details. Colours: <span style="color:var(--amber)">■</span> &lt;4h <span style="color:var(--accent)">■</span> 4-8h <span style="color:var(--green,#4ade80)">■</span> 8h+</div>';
-  return html;
+  return tsFilterBar(false)+employeeWeekGrid(entries,r.from,r.to)+tsHoursTable(entries,r.from,r.to);
 }
 
 function employeeWeekGrid(entries,from,to){
@@ -7207,8 +6667,6 @@ function modalHTML(){
     settCAFirms:()=>settCAFirmsHTML(),newCAFirm:()=>caFirmFormHTML(),editCAFirm:()=>caFirmFormHTML(CA_FIRMS.find(f=>f.id===data.id)),
     editCert:()=>editCertHTML(data),
     newCert:()=>newCertHTML(data),
-    dscDetail:()=>dscDetailHTML(data),
-    dscMovement:()=>dscMovementHTML(data),
     mergeClients:()=>mergeClientsHTML(),
     newDM:()=>newDMHTML(),newChatGroup:()=>newChatGroupHTML(),manageChatGroup:()=>manageChatGroupHTML(data),
     batchLog:()=>batchLogHTML(data),
@@ -7239,14 +6697,14 @@ async function doChangePin(){
   if(curHash!==storedHash){toast('Current PIN incorrect');return}
   const newHash=await hashPIN(nw);
   await fbUpd('users/'+currentUser.id,{pinHash:newHash});
-  currentUser={...currentUser,pinHash:newHash};LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields
+  currentUser={...currentUser,pinHash:newHash};LS.set('currentUser',currentUser);
   // Update Firebase Auth password
   try {
     const fbUser=auth.currentUser;
     if(fbUser) await fbUser.updatePassword(newHash);
   } catch(e){
     // Non-critical - PIN in DB is updated, auth password will sync on next login
-    /* auth warn removed */
+    console.warn('[Auth] Password update failed:', e.code);
   }
   closeModal();toast('PIN updated ✓');
 }
@@ -7582,7 +7040,7 @@ function newTaskHTML(data){
     <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📋 Existing tasks for this client</div>
     <div id="f-client-tasks-list"></div>
   </div>
-  <div class="g2"><div class="form-row"><label class="form-label">Start Date <span style='font-size:10px;color:var(--text3)'>(optional)</span></label><input class="form-input" type="date" id="f-start"/></div><div class="form-row"><label class="form-label">Due Date</label><input class="form-input" type="date" id="f-due" min="${today()}"/><button type="button" class="btn btn-ghost btn-xs" style="margin-top:4px" onclick="document.getElementById('f-due').value=today()">Today</button></div></div>
+  <div class="g2"><div class="form-row"><label class="form-label">Start Date <span style='font-size:10px;color:var(--text3)'>(optional)</span></label><input class="form-input" type="date" id="f-start"/></div><div class="form-row"><label class="form-label">Due Date</label><input class="form-input" type="date" id="f-due" min="${today()}"/></div></div>
   </div>
   <div id="f-unit-wrap" style="display:${data.prefill?.batchMode?'block':'none'}">
     <div class="form-row"><label class="form-label">Unit Label <span style="font-size:10px;color:var(--text3)">e.g. "returns", "forms", "clients"</span></label>
@@ -7632,17 +7090,6 @@ async function createTask(){
   const clientId=document.getElementById('f-client')?.value||'';
   if(!clientId){toast('Please select a client');return;}
 
-  // Require due date
-  const dueDate2=document.getElementById('f-due')?.value||'';
-  if(!dueDate2){toast('Due date is required');return;}
-  // ══ FIX 10: validate 15-day limit ══
-  if(currentUser.role!=='superadmin'){
-    const _maxD=new Date();_maxD.setDate(_maxD.getDate()+15);
-    if(dueDate2>_maxD.toISOString().slice(0,10)){
-      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
-      return;
-    }
-  }
   // Require at least one assignee
   const cbEls=[...document.querySelectorAll('.f-assignee-cb:checked')];
   if(!cbEls.length){toast('Please assign to at least one person');return;}
@@ -8034,14 +7481,6 @@ async function saveTaskDates(id){
   await resetApprovalIfNeeded(id,'date change');
   toast('Dates saved ✓');
 }
-  // 15-day limit for non-superadmin
-  if(newDue&&role!=='superadmin'){
-    const _maxDate=new Date();_maxDate.setDate(_maxDate.getDate()+15);
-    if(newDue>_maxDate.toISOString().slice(0,10)){
-      toast('⚠ Due date cannot exceed 15 days from today. Only Super Admin can set dates beyond this.');
-      return;
-    }
-  }
 async function saveTaskAssignees(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
   if(currentUser.role==='employee'){toast('Only managers/admins can reassign');return;}
@@ -8198,11 +7637,9 @@ async function addManualTime(){
 
 // ── Users ──
 function settUsersHTML(){
-  if(!window._userSearch) window._userSearch='';
   return`${mHdr('Users')}
   <div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${USERS.length} users</div><button class="btn btn-primary btn-sm" onclick="openModal('newUser',{})">+ Add</button></div>
-  <div style="margin-bottom:10px"><input class="form-input" id="sett-users-search" placeholder="Search staff…" value="${window._userSearch||''}" onfocus="document.body.dataset.lastSearchFocus='sett-users-search'" oninput="window._userSearch=this.value;render()"/></div>
-  ${(window._userSearch?(USERS.filter(u=>(u.name||'').toLowerCase().includes(window._userSearch.toLowerCase())||(u.email||'').toLowerCase().includes(window._userSearch.toLowerCase()))):USERS).map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
+  ${USERS.map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
     <div style="flex:1"><div class="li-name">${u.name}</div><div class="li-sub">${u.role==='superadmin'?'Super Admin':u.role==='manager'?'Manager · '+getDept(u.deptId)?.name:'Staff · '+(getDept(u.deptId)?.name||'—')} · ${u.email||'no email'}</div></div>
     <button class="btn btn-ghost btn-xs" onclick="openModal('editUser',{id:'${u.id}'})">Edit</button>
   </div>`).join('')}`;
@@ -8254,7 +7691,7 @@ async function createUser(){
   // Create Firebase Auth account with REAL email + password
   try {
     await auth.createUserWithEmailAndPassword(email, password);
-    
+    console.log('[Auth] Firebase Auth account created:', email);
   } catch(e){
     if(e.code==='auth/email-already-in-use'){
       toast('This email already has a Firebase account. Use a different email or reset password.');
@@ -8286,7 +7723,7 @@ function editUserHTML({id}){
     <div class="form-row"><label class="form-label">Departments</label><div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:7px;max-height:90px;overflow-y:auto">${DEPTS.map(d=>`<label style="display:flex;align-items:center;gap:6px;padding:2px;cursor:pointer"><input type="checkbox" class="uf-dept-cb" value="${d.id}"${(Array.isArray(u.deptIds)?u.deptIds:u.deptId?[u.deptId]:[]).includes(d.id)?' checked':''}><span style="font-size:12px">${d.name}</span></label>`).join('')}</div><div style="font-size:10px;color:var(--text3);margin-top:3px">Select one or more departments</div></div>
   </div>
   <div class="form-row"><label class="form-label">Username <span style="font-size:10px;color:var(--text3)">(optional — for login)</span></label><input class="form-input" id="uf-username" value="${u.username||''}" placeholder="e.g. janvi.davda"/></div>
-  
+  <div class="form-row"><label class="form-label">Set New Password <span style="font-size:10px;color:var(--text3)">(leave blank to keep)</span></label><input class="form-input" type="password" id="uf-new-password" placeholder="Min 6 characters" autocomplete="new-password"/></div>
   <div class="g2">
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--bg3);padding:9px 12px;border-radius:var(--r);border:1px solid var(--border)">
       <input type="checkbox" id="uf-billing" ${u.billingEnabled?' checked':''}/>
@@ -8306,33 +7743,33 @@ function editUserHTML({id}){
   </div>`;
 }
 async function updateUser(id){
-  const newPassVal=(document.getElementById('uf-new-password')?.value||'').trim();
+  const newPassVal=document.getElementById('uf-new-password')?.value||'';
   const deptCbs=[...document.querySelectorAll('.uf-dept-cb:checked')].map(el=>el.value);
   const firstDept=deptCbs[0]||null;
-  const updates={
-    name: document.getElementById('uf-name')?.value?.trim(),
-    email: document.getElementById('uf-email')?.value?.trim()||'',
-    username: (document.getElementById('uf-username')?.value||'').trim().toLowerCase(),
-    role: document.getElementById('uf-role')?.value,
-    deptId: firstDept,
-    deptIds: deptCbs,
-    billingEnabled: !!document.getElementById('uf-billing')?.checked,
-    active: !!document.getElementById('uf-active')?.checked,
-    whatsapp: document.getElementById('uf-mobile')?.value?.trim()||'',
-    mobile: document.getElementById('uf-mobile')?.value?.trim()||''
-  };
-  if(!updates.name){toast('Name required');return;}
-  await fbUpd('users/'+id, updates);
-  // Handle password change
-  if(newPassVal){
-    if(newPassVal.length<6){toast('Password must be at least 6 characters');return;}
-    // Store as pending reset — applied when user next logs in
-    await fbUpd('users/'+id, {pendingPasswordReset: newPassVal});
-    toast('Password changed ✓ — user must logout and login again with new password');
-  } else {
-    toast('User updated ✓');
+  const updates={name:document.getElementById('uf-name')?.value?.trim(),email:document.getElementById('uf-email')?.value?.trim()||'',username:(document.getElementById('uf-username')?.value||'').trim().toLowerCase(),role:document.getElementById('uf-role')?.value,deptId:firstDept,deptIds:deptCbs,billingEnabled:!!document.getElementById('uf-billing')?.checked,whatsapp:document.getElementById('uf-mobile')?.value?.trim()||'',mobile:document.getElementById('uf-mobile')?.value?.trim()||'',active:!!document.getElementById('uf-active')?.checked};
+  if(pinVal){
+    const pin=String(pinVal).padStart(4,'0').slice(0,4);
+    if(!/^\d{4}$/.test(pin)){toast('PIN must be 4 digits');return}
+    updates.pinHash=await hashPIN(pin);
+    // Update Firebase Auth password for this user
+    // We can't update another user's Auth password from client (security) 
+    // but we flag the account for re-creation on next login
+    try {
+      // Delete and recreate the auth account with new password
+      // This is safe because the user will re-authenticate on next login
+      const resetEmail=fbAuthEmail(id);
+      await auth.createUserWithEmailAndPassword(resetEmail, updates.pinHash)
+        .catch(async(e)=>{
+          if(e.code==='auth/email-already-in-use'){
+            // Account exists - we can't update without being signed in as that user
+            // The account will re-sync on next login via the wrong-password handler
+            console.log('[Auth] PIN reset: will re-sync on next login for user', id);
+          }
+        });
+    } catch(_){}
+    toast('PIN reset to '+pin);
   }
-  closeModal();
+  await fbUpd('users/'+id,updates);closeModal();toast('User updated');
 }
 async function delUser(id){if(USERS.filter(u=>u.role==='superadmin').length<=1&&USERS.find(u=>u.id===id)?.role==='superadmin'){toast('Cannot delete last super admin');return}await fbDel('users/'+id);closeModal();toast('Deleted')}
 
@@ -8433,64 +7870,7 @@ function addStsRow(){const list=document.getElementById('sts-list');if(!list)ret
 async function saveStatuses(subDeptId){const list=document.getElementById('sts-list');if(!list)return;const sts=Array.from(list.querySelectorAll('input')).map(inp=>inp.value.trim()).filter(Boolean);if(!sts.length){toast('At least one required');return}await fbSet('statuses/'+subDeptId,sts);closeModal();toast('Saved')}
 
 // ── Clients ──
-function settClientsHTML(){
-  if(!window._settClientSearch) window._settClientSearch='';
-  const q=(window._settClientSearch||'').toLowerCase();
-  const filtered=q?CLIENTS.filter(c=>(c.name||'').toLowerCase().includes(q)||(c.gstin||'').toLowerCase().includes(q)||(c.email||'').toLowerCase().includes(q)):CLIENTS;
-  return`${mHdr('Clients')}
-  <div class="flex-between mb-10">
-    <input class="form-input" id="sett-client-search" style="flex:1;max-width:260px" placeholder="Search name, GSTIN, email…"
-      value="${window._settClientSearch||''}"
-      onfocus="document.body.dataset.lastSearchFocus='sett-client-search'"
-      oninput="window._settClientSearch=this.value;render()"/>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-ghost btn-sm" onclick="openModal('importClients',{})">⬆ Import</button>
-      ${currentUser.role==='superadmin'?'<button class="btn btn-primary btn-sm" onclick="openModal(\'newClient\',{})">+ New</button>':''}
-    </div>
-  </div>
-  <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
-    <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-      <th style="padding:7px 10px;text-align:left">Name</th>
-      <th style="padding:7px 10px;text-align:left">GSTIN</th>
-      <th style="padding:7px 10px;text-align:left">WhatsApp</th>
-      <th style="padding:7px 10px;text-align:left">Email</th>
-      <th style="padding:7px 8px;text-align:center">Total Tasks</th>
-      <th style="padding:7px 8px;text-align:center">Ongoing</th>
-      <th style="padding:7px 8px;text-align:center">Completed</th>
-      <th style="padding:7px 8px;text-align:right">Billed ₹</th>
-      <th style="padding:7px 8px;text-align:right">Pending ₹</th>
-      <th style="padding:7px 8px;text-align:right">Total Billable ₹</th>
-      <th style="padding:7px 8px"></th>
-    </tr></thead>
-    <tbody>
-      ${filtered.map((c,i)=>{
-        const cTasks=TASKS.filter(t=>t.clientId===c.id);
-        const ongoing=cTasks.filter(t=>!isTaskTerminal(t)).length;
-        const completed=cTasks.filter(t=>isTaskTerminal(t)).length;
-        const billed=cTasks.filter(t=>t.billingStatus==='invoiced').reduce((a,t)=>a+(t.billingAmount||0),0);
-        const pending=cTasks.filter(t=>t.billingStatus!=='invoiced'&&isBillingReady(t)).reduce((a,t)=>a+(t.billingAmount||0),0);
-        const total=cTasks.reduce((a,t)=>a+(t.billingAmount||0),0);
-        return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-          <td style="padding:6px 10px;font-weight:500">${c.name}</td>
-          <td style="padding:6px 10px;font-family:var(--mono);font-size:10px">${c.gstin||'—'}</td>
-          <td style="padding:6px 10px;font-size:11px">${c.whatsapp||c.mobile||'—'}</td>
-          <td style="padding:6px 10px;font-size:11px;color:var(--text3)">${c.email||'—'}</td>
-          <td style="padding:6px 8px;text-align:center">${cTasks.length}</td>
-          <td style="padding:6px 8px;text-align:center;color:${ongoing>0?'var(--amber)':'var(--text3)'};font-weight:${ongoing>0?'600':'400'}">${ongoing}</td>
-          <td style="padding:6px 8px;text-align:center;color:var(--green,#4ade80)">${completed}</td>
-          <td style="padding:6px 8px;text-align:right;color:var(--green,#4ade80);font-family:var(--mono)">${billed>0?fmtMoney(billed):'—'}</td>
-          <td style="padding:6px 8px;text-align:right;color:var(--amber);font-family:var(--mono)">${pending>0?fmtMoney(pending):'—'}</td>
-          <td style="padding:6px 8px;text-align:right;font-weight:600;font-family:var(--mono)">${total>0?fmtMoney(total):'—'}</td>
-          <td style="padding:6px 8px;white-space:nowrap">
-            <button class="btn btn-ghost btn-xs" onclick="navigate('clients');setTimeout(()=>openModal('clientDetail',{id:'${c.id}'}),100)">View</button>
-            ${currentUser.role==='superadmin'?`<button class="btn btn-ghost btn-xs" onclick="openModal('editClient',{id:'${c.id}'})">Edit</button>`:''}
-          </td>
-        </tr>`;
-      }).join('')}
-      ${filtered.length===0?'<tr><td colspan="11" style="padding:2rem;text-align:center;color:var(--text3)">No clients found</td></tr>':''}
-    </tbody>
-  </table></div>`;
-}
+function settClientsHTML(){return`${mHdr('Clients')}<div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${CLIENTS.length} clients</div><div style="display:flex;gap:6px"><button class="btn btn-ghost btn-sm" onclick="openModal('importClients',{})">⬆ Import</button><button class="btn btn-primary btn-sm" onclick="openModal('newClient',{})">+ Add</button></div></div>${CLIENTS.map(c=>`<div class="list-item"><div style="width:32px;height:32px;border-radius:50%;background:var(--blue-bg);color:var(--blue);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600">${c.name.slice(0,2).toUpperCase()}</div><div style="flex:1"><div class="li-name">${c.name}</div><div class="li-sub">${TASKS.filter(t=>t.clientId===c.id).length} tasks${c.gstin?' · '+c.gstin:''}${c.phones?.length?' · 📱'+c.phones[0]:''}${c.emails?.length?' · ✉ '+c.emails[0]:''}</div></div><button class="btn btn-ghost btn-xs" onclick="openModal('editClient',{id:'${c.id}'})">Edit</button><button class="btn btn-danger btn-xs" onclick="delClient('${c.id}')">✕</button></div>`).join('')}`}
 function newClientHTML(){if(currentUser.role!=='superadmin'){return mHdr('Add Client')+'<p style="padding:12px;color:var(--red)">Only Super Admin can create clients.</p>';}
   var html=mHdr('Add Client');
   html+='<div class="form-row"><label class="form-label">Client Name *</label>'
@@ -8575,7 +7955,7 @@ try{var sl=document.getElementById("splash-logo");if(sl)sl.src=RB_LOGO;}catch(e)
         const stored=LS.get('currentUser',null);
         if(stored && stored.id){
           currentUser=stored;
-          /* auth log removed */
+          console.log('[Auth] Session restored for', stored.name);
           // Re-attach per-user timer listener
           db.ref('active_timers/'+currentUser.id).on('value',s=>{
             activeTimer=s.val()||null;

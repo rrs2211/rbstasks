@@ -4883,57 +4883,88 @@ async function doEmailLogin(){
 
   loginLoading=true;loginError='';renderLogin();
 
-  // ── Step 1: Find the matching user record in our database ──
-  let matched=USERS.find(u=>(u.email||'').toLowerCase()===rawInput);
-  if(!matched) matched=USERS.find(u=>(u.username||'').toLowerCase()===rawInput);
+  // ── Step 1: Resolve email from input ──────────────────────────────────────
+  // USERS array is empty at login time (Firebase not yet connected).
+  // So we must query Firebase DB directly to resolve username→email.
+  let realEmail=rawInput;
+  let userSnap=null;
 
-  if(!matched){
-    loginLoading=false;
-    loginError='No account found for that email/username. Contact your admin.';
-    renderLogin();return;
-  }
-  if(matched.active===false){
-    loginLoading=false;
-    loginError='Your account has been deactivated. Contact your admin.';
-    renderLogin();return;
-  }
-
-  const realEmail=matched.email;
-  if(!realEmail){
-    loginLoading=false;
-    loginError='This account has no email set. Contact your admin.';
-    renderLogin();return;
-  }
-
-  // ── Step 2: Check if admin set a new password (pendingPasswordReset) ──
-  // If so, we need to recreate the Firebase Auth account with the new password.
-  if(matched.pendingPasswordReset){
-    const newPwd=matched.pendingPasswordReset;
-    // Try signing in with the NEW password first (maybe already applied)
+  if(!rawInput.includes('@')){
+    // Username entered — must look up email from Firebase DB
     try {
-      await auth.signInWithEmailAndPassword(realEmail, newPwd);
-      // New password works - clear the pending flag
-      await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-      toast('✓ Password updated successfully.');
-      // Fall through to complete login below
-    } catch(tryNew){
-      // New password didn't work - try old password then force-update
+      const snap=await db.ref('users').orderByChild('username').equalTo(rawInput).once('value');
+      const val=snap.val();
+      if(val){
+        const userData=Object.values(val)[0];
+        realEmail=userData.email;
+        userSnap=userData;
+      } else {
+        // Try case-insensitive scan
+        const allSnap=await db.ref('users').once('value');
+        const allUsers=allSnap.val()?Object.values(allSnap.val()):[];
+        const found=allUsers.find(u=>(u.username||'').toLowerCase()===rawInput);
+        if(found){realEmail=found.email;userSnap=found;}
+        else{
+          loginLoading=false;
+          loginError='No account found for username "'+rawInput+'". Contact your admin.';
+          renderLogin();return;
+        }
+      }
+    } catch(e){
+      loginLoading=false;
+      loginError='Could not look up account. Check connection.';
+      renderLogin();return;
+    }
+  }
+
+  if(!realEmail||!realEmail.includes('@')){
+    loginLoading=false;
+    loginError='Invalid email. Contact your admin.';
+    renderLogin();return;
+  }
+
+  // ── Step 2: Attempt Firebase Auth sign-in ────────────────────────────────
+  let cred=null;
+  try {
+    cred=await auth.signInWithEmailAndPassword(realEmail, password);
+  } catch(signInErr){
+    if(signInErr.code==='auth/user-not-found'||signInErr.code==='auth/invalid-credential'||signInErr.code==='auth/invalid-email'){
+      // No Firebase Auth account for this email yet (old migrated user).
+      // Check if they exist in our DB first.
       try {
-        const oldCred=await auth.signInWithEmailAndPassword(realEmail, password);
-        // Old password worked - now update to new password
-        await oldCred.user.updatePassword(newPwd);
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-        toast('✓ Password has been updated by admin.');
-      } catch(tryOld){
-        if(tryOld.code==='auth/user-not-found'||tryOld.code==='auth/invalid-credential'){
-          // Account doesn't exist yet (old migrated user) - create with new password
+        const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+        if(!snap.val()){
+          loginLoading=false;
+          loginError='No account found. Contact your admin.';
+          renderLogin();return;
+        }
+        // User exists in DB — create their Firebase Auth account now.
+        cred=await auth.createUserWithEmailAndPassword(realEmail, password);
+        toast('✓ Account activated. Use this password from now on.');
+      } catch(createErr){
+        loginLoading=false;
+        if(createErr.code==='auth/email-already-in-use'){
+          loginError='Incorrect password.';
+        } else {
+          loginError='Account activation failed: '+createErr.code;
+        }
+        renderLogin();return;
+      }
+    } else if(signInErr.code==='auth/wrong-password'){
+      // Check for admin-set pending password reset
+      try {
+        const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+        const users=snap.val()?Object.values(snap.val()):[];
+        const usr=users[0];
+        if(usr?.pendingPasswordReset){
+          // Admin changed password — try new password
           try {
-            await auth.createUserWithEmailAndPassword(realEmail, newPwd);
-            await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-            toast('✓ Account set up with new password.');
-          } catch(createErr){
+            cred=await auth.signInWithEmailAndPassword(realEmail, usr.pendingPasswordReset);
+            await fbUpd('users/'+usr.id,{pendingPasswordReset:null});
+            toast('✓ Password updated. Use the new password from now on.');
+          } catch(newPwdErr){
             loginLoading=false;
-            loginError='Account setup failed: '+createErr.code;
+            loginError='Incorrect password. If admin reset your password, use the new one.';
             renderLogin();return;
           }
         } else {
@@ -4941,45 +4972,66 @@ async function doEmailLogin(){
           loginError='Incorrect password.';
           renderLogin();return;
         }
-      }
-    }
-  } else {
-    // ── Step 3: Normal login — sign in with real email + entered password ──
-    try {
-      await auth.signInWithEmailAndPassword(realEmail, password);
-    } catch(signInErr){
-      if(signInErr.code==='auth/user-not-found'||signInErr.code==='auth/invalid-credential'){
-        // Old user: no Firebase Auth account yet — create it now (first login after migration)
-        try {
-          await auth.createUserWithEmailAndPassword(realEmail, password);
-          toast('✓ Account activated. You can use this password next time.');
-        } catch(createErr){
-          loginLoading=false;
-          if(createErr.code==='auth/email-already-in-use'){
-            loginError='Incorrect password.';
-          } else {
-            loginError='Login failed: '+createErr.code;
-          }
-          renderLogin();return;
-        }
-      } else if(signInErr.code==='auth/wrong-password'){
+      } catch(_){
         loginLoading=false;
         loginError='Incorrect password.';
         renderLogin();return;
-      } else if(signInErr.code==='auth/too-many-requests'){
-        loginLoading=false;
-        loginError='Too many attempts. Please wait a moment.';
-        renderLogin();return;
-      } else if(signInErr.code==='auth/network-request-failed'){
-        loginLoading=false;
-        loginError='Network error. Check your connection.';
-        renderLogin();return;
-      } else {
-        loginLoading=false;
-        loginError='Sign in failed: '+signInErr.code;
-        renderLogin();return;
       }
+    } else if(signInErr.code==='auth/too-many-requests'){
+      loginLoading=false;
+      loginError='Too many attempts. Please wait a moment.';
+      renderLogin();return;
+    } else if(signInErr.code==='auth/network-request-failed'){
+      loginLoading=false;
+      loginError='Network error. Check your connection.';
+      renderLogin();return;
+    } else {
+      loginLoading=false;
+      loginError='Sign in error: '+signInErr.code;
+      renderLogin();return;
     }
+  }
+
+  // ── Step 3: Load user record from DB and complete login ──────────────────
+  if(!cred){loginLoading=false;loginError='Login failed.';renderLogin();return;}
+
+  // Fetch fresh user data from Firebase
+  let matched=null;
+  try {
+    const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+    const val=snap.val();
+    if(val) matched=Object.values(val)[0];
+  } catch(_){}
+
+  if(!matched){
+    // Fallback: try loading all users
+    try {
+      const snap=await db.ref('users').once('value');
+      const all=snap.val()?Object.values(snap.val()):[];
+      matched=all.find(u=>(u.email||'').toLowerCase()===realEmail.toLowerCase());
+    } catch(_){}
+  }
+
+  if(!matched){
+    await auth.signOut();
+    loginLoading=false;
+    loginError='Authenticated but no user record found. Contact admin.';
+    renderLogin();return;
+  }
+
+  if(matched.active===false){
+    await auth.signOut();
+    loginLoading=false;
+    loginError='Your account has been deactivated. Contact your admin.';
+    renderLogin();return;
+  }
+
+  // Handle pending password reset — apply it now since we have fresh auth
+  if(matched.pendingPasswordReset){
+    try {
+      await cred.user.updatePassword(matched.pendingPasswordReset);
+      await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
+    } catch(_){}
   }
     currentUser={...matched,pendingPasswordReset:null};
     LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields

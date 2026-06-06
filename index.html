@@ -635,7 +635,6 @@ let BATCH_LOGS=[];
 let DSC_RECORDS=[];
 let DSC_MOVEMENTS=[];
 let dscFilter={search:'',status:'all',expiryDays:'',tab:0};
-let _dscSearch='';
 let dscExpiry=30;        // [{id,taskId,userId,date,qty,seconds,note}]
 let batchLogLoaded=false;
 let showClosedBilled=false; // #3: hide invoiced closed tasks by default
@@ -3045,274 +3044,274 @@ async function dscMarkInwardFromCS(dscId){
 
 function dscPage(){
   const isAdmin=currentUser.role==='superadmin'||currentUser.role==='manager';
-  const tabs=['📋 Inventory','📦 Movement Log','⚠ Expiry Alert','⛔ Expired','➕ New DSC'];
-  const ct=dscFilter.tab||0;
+  const tabs=['📋 Inventory','📦 Movements','⚠ Expiry Alert','☠ Expired','➕ New DSC'];
+  const tab=dscFilter.tab||0;
+  const now=new Date();now.setHours(0,0,0,0);
+  const todayStr=today();
 
-  // Header + tabs common to all views
-  const pageHdr=`<div class="page-header">
-    <div class="page-title">DSC Management</div>
-    <div style="display:flex;gap:6px">
-      ${isAdmin?`<button class="btn btn-ghost btn-sm" onclick="openModal('dscImport',{})">⬆ Import</button>`:''}
-      ${isAdmin?`<button class="btn btn-primary btn-sm" onclick="dscFilter.tab=4;render()">+ New DSC</button>`:''}
-    </div>
-  </div>
-  <div class="tabs">${tabs.map((t,i)=>`<div class="tab${ct===i?' active':''}" onclick="dscFilter.tab=${i};render()">${t}</div>`).join('')}</div>`;
+  // Auto-expire: mark DSCs with expiry<=today as inactive (in-memory flag, write to FB)
+  DSC_RECORDS.forEach(d=>{
+    if(d.active&&d.expiryDate&&d.expiryDate<=todayStr){
+      fbUpd('dsc_records/'+d.id,{active:false}).catch(()=>{});
+      d.active=false; // optimistic update
+    }
+  });
 
-  // ── Tab 0: Inventory ──
-  if(ct===0){
-    // Fix 8: Use window._dscSearch to prevent focus loss
-    if(!window._dscSearch) window._dscSearch='';
-    let records=[...DSC_RECORDS].filter(d=>dscStatus(d)!=='expired'&&dscStatus(d)!=='inactive');
-    const q=(window._dscSearch||'').toLowerCase();
-    if(q) records=records.filter(d=>(d.serial||'').toLowerCase().includes(q)||(d.company||'').toLowerCase().includes(q)||(d.holderName||'').toLowerCase().includes(q)||(d.panNo||'').toLowerCase().includes(q));
+  function tabBar(){
+    return '<div class="tabs">'+tabs.map((t,i)=>'<div class="tab'+(tab===i?' active':'')+'" onclick="dscFilter.tab='+i+';dscFilter.search=\'\';render()">'+t+'</div>').join('')+'</div>';
+  }
+  function pageHdr(extraBtn){
+    return '<div class="page-header"><div class="page-title">DSC Management</div><div style="display:flex;gap:6px">'
+      +(isAdmin?'<button class="btn btn-ghost btn-sm" onclick="openModal(\'dscImport\',{})">⬆ Import</button>':'')
+      +(isAdmin?'<button class="btn btn-primary btn-sm" onclick="dscFilter.tab=4;render()">+ New DSC</button>':'')
+      +(extraBtn||'')
+      +'</div></div>';
+  }
+
+  // ── TAB 0: Inventory ─────────────────────────────────────────────────────
+  if(tab===0){
+    let records=DSC_RECORDS.filter(d=>d.active!==false);
+    const q=(dscFilter.search||'').toLowerCase();
+    if(q) records=records.filter(d=>(d.serial||'').toLowerCase().includes(q)||(d.company||'').toLowerCase().includes(q)||(d.holderName||'').toLowerCase().includes(q)||(d.panNo||'').toLowerCase().includes(q)||(d.currentWith||'').toLowerCase().includes(q));
     if(dscFilter.status!=='all') records=records.filter(d=>dscStatus(d)===dscFilter.status);
 
-    const inOffice=DSC_RECORDS.filter(d=>dscStatus(d)==='in_office').length;
-    const withClient=DSC_RECORDS.filter(d=>dscStatus(d)==='with_client').length;
-    const withCs=DSC_RECORDS.filter(d=>dscStatus(d)==='with_cs').length;
-    const expiringSoon=DSC_RECORDS.filter(d=>{if(!d.expiryDate||dscStatus(d)==='expired')return false;const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-new Date())/86400000);return days>=0&&days<=30;}).length;
+    const inOffice=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='in_office').length;
+    const withCS=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='with_cs').length;
+    const withClient=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='with_client').length;
+    const expiringSoon=DSC_RECORDS.filter(d=>d.active!==false&&d.expiryDate&&Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000)<=30&&Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000)>=0).length;
 
-    return pageHdr+`
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
-      <div class="stat-card" style="border-top:3px solid var(--green,#4ade80)"><div class="sc-label">In Office</div><div class="sc-val" style="color:var(--green,#4ade80)">${inOffice}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--blue)"><div class="sc-label">With CS</div><div class="sc-val" style="color:var(--blue)">${withCs}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--amber)"><div class="sc-label">With Client</div><div class="sc-val" style="color:var(--amber)">${withClient}</div></div>
-      <div class="stat-card" style="border-top:3px solid var(--red)"><div class="sc-label">Expiring ≤30d</div><div class="sc-val" style="color:var(--red)">${expiringSoon}</div></div>
-      <div class="stat-card"><div class="sc-label">Total Active</div><div class="sc-val">${inOffice+withCs+withClient}</div></div>
-    </div>
-    <div class="filter-bar" style="margin-bottom:12px;flex-wrap:wrap">
-      <input class="form-input" id="dsc-search-inp" style="max-width:220px"
-        placeholder="Search serial, company, PAN…"
-        value="${window._dscSearch||''}"
-        onfocus="document.body.dataset.lastSearchFocus='dsc-search-inp'"
-        oninput="window._dscSearch=this.value;render()"/>
-      <select class="form-select" onchange="dscFilter.status=this.value;render()">
-        <option value="all">All Status</option>
-        <option value="in_office"${dscFilter.status==='in_office'?' selected':''}>🏢 In Office</option>
-        <option value="with_cs"${dscFilter.status==='with_cs'?' selected':''}>💼 With CS</option>
-        <option value="with_client"${dscFilter.status==='with_client'?' selected':''}>👤 With Client</option>
-      </select>
-      ${q||dscFilter.status!=='all'?`<button class="btn btn-ghost btn-xs" onclick="window._dscSearch='';dscFilter.status='all';render()">✕ Clear</button>`:''}
-    </div>
-    <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left">Serial</th>
-        <th style="padding:8px 10px;text-align:left">Company / Holder</th>
-        <th style="padding:8px 10px;text-align:left">PAN / Class</th>
-        <th style="padding:8px 10px;text-align:left">Currently With</th>
-        <th style="padding:8px 10px;text-align:left">Entry</th>
-        <th style="padding:8px 10px;text-align:left">Expiry</th>
-        <th style="padding:8px 10px;text-align:left">Status</th>
-        <th style="padding:8px 10px;text-align:right">Actions</th>
-      </tr></thead>
-      <tbody>
-        ${records.length?records.map((d,i)=>`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-          <td style="padding:7px 10px;font-family:var(--mono);font-weight:600;color:var(--accent)">${d.serial||'—'}</td>
-          <td style="padding:7px 10px"><div style="font-weight:500">${d.company||'—'}</div><div style="font-size:10px;color:var(--text3)">${d.holderName||''}</div></td>
-          <td style="padding:7px 10px"><div>${d.panNo||'—'}</div><div style="font-size:10px;color:var(--text3)">${d.dscClass||''}</div></td>
-          <td style="padding:7px 10px;font-size:11px">${d.currentWith||'—'}</td>
-          <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${d.entryDate?fmtDate(d.entryDate):'—'}</td>
-          <td style="padding:7px 10px">${dscExpiryBadge(d)}</td>
-          <td style="padding:7px 10px">${dscStatusBadge(d)}</td>
-          <td style="padding:7px 10px;text-align:right;white-space:nowrap">${dscQuickActions(d)}</td>
-        </tr>`).join('')
-        :'<tr><td colspan="8" style="padding:3rem;text-align:center;color:var(--text3)">No active DSC records found</td></tr>'}
-      </tbody>
-    </table></div>`;
+    return pageHdr()
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px">'
+      +'<div class="stat-card" style="border-top:3px solid var(--green,#4ade80);cursor:pointer" onclick="dscFilter.status=dscFilter.status===\'in_office\'?\'all\':\'in_office\';render()"><div class="sc-label">In Office</div><div class="sc-val" style="color:var(--green,#4ade80)">'+inOffice+'</div></div>'
+      +'<div class="stat-card" style="border-top:3px solid var(--blue);cursor:pointer" onclick="dscFilter.status=dscFilter.status===\'with_cs\'?\'all\':\'with_cs\';render()"><div class="sc-label">With CS</div><div class="sc-val" style="color:var(--blue)">'+withCS+'</div></div>'
+      +'<div class="stat-card" style="border-top:3px solid var(--amber);cursor:pointer" onclick="dscFilter.status=dscFilter.status===\'with_client\'?\'all\':\'with_client\';render()"><div class="sc-label">With Client</div><div class="sc-val" style="color:var(--amber)">'+withClient+'</div></div>'
+      +'<div class="stat-card" style="border-top:3px solid var(--red);cursor:pointer" onclick="dscFilter.tab=2;render()"><div class="sc-label">Expiring ≤30d</div><div class="sc-val" style="color:var(--red)">'+expiringSoon+'</div></div>'
+      +'<div class="stat-card"><div class="sc-label">Total Active</div><div class="sc-val">'+DSC_RECORDS.filter(d=>d.active!==false).length+'</div></div>'
+      +'</div>'
+      +tabBar()
+      +'<div class="filter-bar" style="margin-bottom:10px">'
+      +'<input class="form-input" id="dsc-search-inp" style="max-width:220px" placeholder="Search serial, company, PAN, holder…" value="'+escHtml(dscFilter.search||'')+'"'
+      +' onfocus="document.body.dataset.lastSearchFocus=\'dsc-search-inp\'" oninput="dscFilter.search=this.value;render()"/>'
+      +'<select class="form-select" onchange="dscFilter.status=this.value;render()">'
+      +'<option value="all">All Status</option>'
+      +'<option value="in_office"'+(dscFilter.status==='in_office'?' selected':'')+'>🏢 In Office</option>'
+      +'<option value="with_cs"'+(dscFilter.status==='with_cs'?' selected':'')+'>💼 With CS</option>'
+      +'<option value="with_client"'+(dscFilter.status==='with_client'?' selected':'')+'>👤 With Client</option>'
+      +'</select>'
+      +((dscFilter.search||dscFilter.status!=='all')?'<button class="btn btn-ghost btn-xs" onclick="dscFilter.search=\'\';dscFilter.status=\'all\';render()">✕ Clear</button>':'')
+      +'</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">'
+      +'<th style="padding:7px 8px;text-align:left">Serial</th>'
+      +'<th style="padding:7px 8px;text-align:left">Company</th>'
+      +'<th style="padding:7px 8px;text-align:left">Holder / PAN</th>'
+      +'<th style="padding:7px 8px;text-align:left">Class</th>'
+      +'<th style="padding:7px 8px;text-align:left">Expiry</th>'
+      +'<th style="padding:7px 8px;text-align:left">Status / Location</th>'
+      +'<th style="padding:7px 8px;text-align:left">Actions</th>'
+      +'</tr></thead><tbody>'
+      +( records.length
+        ? records.sort((a,b)=>(a.serial||'').localeCompare(b.serial||'')).map((d,i)=>{
+            const st=dscStatus(d);
+            const rowBg=i%2===0?'transparent':'var(--bg2)';
+            return '<tr style="border-bottom:1px solid var(--border);background:'+rowBg+'">'
+              +'<td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:var(--accent)">'+d.serial+'</td>'
+              +'<td style="padding:6px 8px"><div style="font-weight:500">'+escHtml(d.company||'—')+'</div><div style="font-size:10px;color:var(--text3)">'+escHtml(d.currentWith||'')+'</div></td>'
+              +'<td style="padding:6px 8px"><div>'+escHtml(d.holderName||'—')+'</div><div style="font-size:10px;color:var(--text3);font-family:var(--mono)">'+escHtml(d.panNo||'')+'</div></td>'
+              +'<td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+escHtml(d.dscClass||'')+'</td>'
+              +'<td style="padding:6px 8px">'+dscExpiryBadge(d)+'</td>'
+              +'<td style="padding:6px 8px">'+dscStatusBadge(d)+'</td>'
+              +'<td style="padding:6px 8px;white-space:nowrap">'+dscQuickBtns(d,isAdmin)+'</td>'
+              +'</tr>';
+          }).join('')
+        : '<tr><td colspan="7" style="padding:2rem;text-align:center;color:var(--text3)">No DSC records match</td></tr>'
+      )
+      +'</tbody></table></div>';
   }
 
-  // ── Tab 1: Movement Log ──
-  if(ct===1){
+  // ── TAB 1: Movement Log ──────────────────────────────────────────────────
+  if(tab===1){
     const movements=[...DSC_MOVEMENTS].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-    return pageHdr+`
-    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left">Date</th>
-        <th style="padding:8px 10px;text-align:left">Serial</th>
-        <th style="padding:8px 10px;text-align:left">Company</th>
-        <th style="padding:8px 10px;text-align:left">Movement</th>
-        <th style="padding:8px 10px;text-align:left">Person</th>
-        <th style="padding:8px 10px;text-align:left">Contact</th>
-        <th style="padding:8px 10px;text-align:left">Logged By</th>
-        <th style="padding:8px 10px;text-align:left">Remarks</th>
-      </tr></thead>
-      <tbody>
-        ${movements.length?movements.map((m,i)=>{
-          const dsc=DSC_RECORDS.find(d=>d.id===m.dscId);
-          const dir=m.direction==='out'?'<span style="color:var(--amber);font-weight:600">→ Out</span>':'<span style="color:var(--green,#4ade80);font-weight:600">← In</span>';
-          return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-            <td style="padding:7px 10px;font-size:11px">${m.date?fmtDate(m.date):'—'}</td>
-            <td style="padding:7px 10px;font-family:var(--mono);color:var(--accent)">${dsc?.serial||'—'}</td>
-            <td style="padding:7px 10px;font-weight:500">${dsc?.company||'—'}</td>
-            <td style="padding:7px 10px">${dir}</td>
-            <td style="padding:7px 10px">${m.personName||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${m.contact||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${getUser(m.recordedBy)?.name||'—'}</td>
-            <td style="padding:7px 10px;font-size:11px;color:var(--text3)">${m.remarks||'—'}</td>
-          </tr>`;
-        }).join(''):'<tr><td colspan="8" style="padding:3rem;text-align:center;color:var(--text3)">No movements recorded</td></tr>'}
-      </tbody>
-    </table></div>`;
+    const q=(dscFilter.search||'').toLowerCase();
+    const filtered=q?movements.filter(m=>{const d=DSC_RECORDS.find(x=>x.id===m.dscId);return(d?.serial||'').toLowerCase().includes(q)||(d?.company||'').toLowerCase().includes(q)||(m.personName||'').toLowerCase().includes(q);}):movements;
+    return pageHdr()
+      +tabBar()
+      +'<div class="filter-bar" style="margin-bottom:10px">'
+      +'<input class="form-input" id="dsc-search-inp" style="max-width:220px" placeholder="Search by serial, company, person…" value="'+escHtml(dscFilter.search||'')+'"'
+      +' onfocus="document.body.dataset.lastSearchFocus=\'dsc-search-inp\'" oninput="dscFilter.search=this.value;render()"/>'
+      +'</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">'
+      +'<th style="padding:7px 8px">Date</th><th style="padding:7px 8px">Serial</th><th style="padding:7px 8px">Company</th>'
+      +'<th style="padding:7px 8px">Direction</th><th style="padding:7px 8px">Person</th>'
+      +'<th style="padding:7px 8px">Contact</th><th style="padding:7px 8px">Remarks</th><th style="padding:7px 8px">By</th>'
+      +'</tr></thead><tbody>'
+      +( filtered.length
+        ? filtered.map((m,i)=>{
+            const dsc=DSC_RECORDS.find(d=>d.id===m.dscId);
+            const dir=m.direction==='out'?'<span style="color:var(--amber);font-weight:600">→ Out</span>':'<span style="color:var(--green,#4ade80);font-weight:600">← In</span>';
+            return '<tr style="border-bottom:1px solid var(--border);background:'+(i%2===0?'transparent':'var(--bg2)')+'"><td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+(m.date?fmtDate(m.date):'—')+'</td><td style="padding:6px 8px;font-family:var(--mono);color:var(--accent)">'+(dsc?.serial||'—')+'</td><td style="padding:6px 8px;font-weight:500">'+(dsc?.company||'—')+'</td><td style="padding:6px 8px">'+dir+'</td><td style="padding:6px 8px">'+(m.personName||'—')+'</td><td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+(m.contact||'—')+'</td><td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+(m.remarks||'—')+'</td><td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+(getUser(m.recordedBy)?.name||'')+'</td></tr>';
+          }).join('')
+        : '<tr><td colspan="8" style="padding:2rem;text-align:center;color:var(--text3)">No movements recorded</td></tr>'
+      )
+      +'</tbody></table></div>';
   }
 
-  // ── Tab 2: Expiry Alert (active only, expiring soon) ──
-  if(ct===2){
-    const expiryDays=dscExpiry||30;
-    const now=new Date();now.setHours(0,0,0,0);
-    // Fix 5: only show ACTIVE DSCs expiring within specified days (not already expired)
+  // ── TAB 2: Expiry Alert (active only, expiring within N days) ────────────
+  if(tab===2){
+    const exDays=dscExpiry||30;
     const expiring=DSC_RECORDS.filter(d=>{
-      if(!d.expiryDate||d.active===false) return false;
+      if(!d.active||d.active===false) return false; // skip inactive/expired
+      if(!d.expiryDate) return false;
       const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000);
-      return days>=0&&days<=expiryDays; // >=0 means not yet expired
+      return days>=0&&days<=exDays; // active but expiring soon
     }).sort((a,b)=>a.expiryDate.localeCompare(b.expiryDate));
-    return pageHdr+`
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-      <span style="font-size:13px;font-weight:600">Show DSCs expiring within:</span>
-      <input type="number" class="form-input" value="${expiryDays}" min="1" max="365"
-        style="width:80px" onchange="dscExpiry=parseInt(this.value)||30;render()"/>
-      <span style="font-size:13px">days</span>
-      <span style="font-size:12px;color:var(--amber);font-weight:500">${expiring.length} active DSC(s) expiring soon</span>
-    </div>
-    ${expiring.length?`<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-      ${expiring.map(d=>{
-        const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000);
-        const bg=days<=7?'rgba(239,68,68,.05)':'transparent';
-        return `<div style="display:grid;grid-template-columns:auto 1fr auto auto auto;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);background:${bg}">
-          <div style="font-family:var(--mono);font-weight:700;color:var(--accent)">${d.serial}</div>
-          <div><div style="font-weight:500">${d.company}</div><div style="font-size:11px;color:var(--text3)">${d.holderName||''} · PAN: ${d.panNo||'—'}</div></div>
-          ${dscStatusBadge(d)}
-          ${dscExpiryBadge(d)}
-          ${isAdmin?`<div style="display:flex;gap:5px">${dscQuickActions(d)}</div>`:''}
-        </div>`;
-      }).join('')}
-    </div>`:`<div style="text-align:center;padding:3rem;color:var(--text3)">✓ No active DSCs expiring within ${expiryDays} days</div>`}`;
+    const alreadyExpiredCount=DSC_RECORDS.filter(d=>d.expiryDate&&d.expiryDate<=todayStr).length;
+    return pageHdr()
+      +tabBar()
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">'
+      +'<span style="font-size:13px;font-weight:600">Show DSCs expiring within:</span>'
+      +'<input type="number" class="form-input" value="'+dscExpiry+'" min="1" max="365" style="width:75px" onchange="dscExpiry=parseInt(this.value)||30;render()"/>'
+      +'<span style="font-size:13px">days</span>'
+      +(alreadyExpiredCount?'<button class="btn btn-ghost btn-xs" onclick="dscFilter.tab=3;render()" style="color:var(--red)">'+alreadyExpiredCount+' expired — view →</button>':'')
+      +'</div>'
+      +( expiring.length
+        ? '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">'
+          +expiring.map(d=>{
+            const days=Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000);
+            const bg=days<=7?'rgba(239,68,68,.05)':'transparent';
+            return '<div style="display:grid;grid-template-columns:auto 1fr auto auto auto auto;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);background:'+bg+'">'
+              +'<div style="font-family:var(--mono);font-weight:700;color:var(--accent)">'+d.serial+'</div>'
+              +'<div><div style="font-weight:500">'+escHtml(d.company)+'</div><div style="font-size:10px;color:var(--text3)">'+escHtml(d.holderName||'')+'</div></div>'
+              +dscStatusBadge(d)
+              +dscExpiryBadge(d)
+              +'<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscDetail\',{id:\''+d.id+'\'})">View</button>'
+              +(isAdmin?'<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscEdit\',{id:\''+d.id+'\'})">Edit</button>':'')
+              +'</div>';
+          }).join('')
+          +'</div>'
+        : '<div style="text-align:center;padding:3rem;color:var(--text3)">✓ No active DSCs expiring within '+exDays+' days</div>'
+      );
   }
 
-  // ── Tab 3: Expired DSCs ──
-  if(ct===3){
-    const expired=DSC_RECORDS.filter(d=>d.expiryDate&&d.expiryDate<=today()).sort((a,b)=>b.expiryDate.localeCompare(a.expiryDate));
-    return pageHdr+`
-    <div style="font-size:12px;color:var(--text3);margin-bottom:12px">${expired.length} expired DSC(s)</div>
-    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left">Serial</th>
-        <th style="padding:8px 10px;text-align:left">Company / Holder</th>
-        <th style="padding:8px 10px;text-align:left">PAN</th>
-        <th style="padding:8px 10px;text-align:left">Expired On</th>
-        <th style="padding:8px 10px;text-align:left">Days Ago</th>
-        <th style="padding:8px 10px"></th>
-      </tr></thead>
-      <tbody>
-        ${expired.length?expired.map((d,i)=>{
-          const daysAgo=Math.abs(Math.floor((new Date(d.expiryDate+'T00:00:00')-new Date())/86400000));
-          return `<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--bg2)'}">
-            <td style="padding:7px 10px;font-family:var(--mono);color:var(--red)">${d.serial}</td>
-            <td style="padding:7px 10px"><div style="font-weight:500">${d.company}</div><div style="font-size:10px;color:var(--text3)">${d.holderName||''}</div></td>
-            <td style="padding:7px 10px">${d.panNo||'—'}</td>
-            <td style="padding:7px 10px;color:var(--red)">${fmtDate(d.expiryDate)}</td>
-            <td style="padding:7px 10px;color:var(--red);font-weight:600">${daysAgo}d ago</td>
-            <td style="padding:7px 10px;white-space:nowrap">
-              <button class="btn btn-ghost btn-xs" onclick="openModal('dscEdit',{id:'${d.id}'})">Edit / Renew</button>
-            </td>
-          </tr>`;
-        }).join(''):'<tr><td colspan="6" style="padding:3rem;text-align:center;color:var(--text3)">No expired DSCs</td></tr>'}
-      </tbody>
-    </table></div>`;
+  // ── TAB 3: Expired DSCs ──────────────────────────────────────────────────
+  if(tab===3){
+    const expired=DSC_RECORDS.filter(d=>!d.active||d.active===false||( d.expiryDate&&d.expiryDate<=todayStr))
+      .sort((a,b)=>(b.expiryDate||'').localeCompare(a.expiryDate||''));
+    return pageHdr()
+      +tabBar()
+      +'<div style="font-size:12px;color:var(--text3);margin-bottom:10px">'+expired.length+' expired / inactive DSC records</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">'
+      +'<th style="padding:7px 8px">Serial</th><th style="padding:7px 8px">Company</th>'
+      +'<th style="padding:7px 8px">Holder</th><th style="padding:7px 8px">Expiry</th>'
+      +'<th style="padding:7px 8px">Last Location</th><th style="padding:7px 8px"></th>'
+      +'</tr></thead><tbody>'
+      +( expired.length
+        ? expired.map((d,i)=>'<tr style="border-bottom:1px solid var(--border);background:'+(i%2===0?'transparent':'var(--bg2)')+';opacity:0.7">'
+            +'<td style="padding:6px 8px;font-family:var(--mono);color:var(--text3)">'+d.serial+'</td>'
+            +'<td style="padding:6px 8px;font-weight:500">'+escHtml(d.company||'—')+'</td>'
+            +'<td style="padding:6px 8px;color:var(--text3)">'+escHtml(d.holderName||'—')+'</td>'
+            +'<td style="padding:6px 8px"><span style="color:var(--red);font-size:11px">'+fmtDate(d.expiryDate||'')+'</span></td>'
+            +'<td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+escHtml(d.currentWith||'—')+'</td>'
+            +'<td style="padding:6px 8px;white-space:nowrap">'
+            +'<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscDetail\',{id:\''+d.id+'\'})">View</button>'
+            +(isAdmin?'<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscEdit\',{id:\''+d.id+'\'})">Renew/Edit</button>':'')
+            +'</td></tr>'
+          ).join('')
+        : '<tr><td colspan="6" style="padding:2rem;text-align:center;color:var(--text3)">No expired DSC records</td></tr>'
+      )
+      +'</tbody></table></div>';
   }
 
-  // ── Tab 4: New DSC ──
-  if(ct===4){
-    if(!isAdmin) return pageHdr+`<div style="text-align:center;padding:3rem;color:var(--red)">Only managers/admins can add DSC records.</div>`;
+  // ── TAB 4: New DSC ───────────────────────────────────────────────────────
+  if(tab===4){
+    if(!isAdmin) return pageHdr()+tabBar()+'<div style="text-align:center;padding:3rem;color:var(--red)">Only managers/admins can add DSC records.</div>';
     const nextSerial=nextDscSerial();
-    // Fix 6: company dropdown from existing records + new
+    // Unique companies from existing records for datalist
     const existingCompanies=[...new Set(DSC_RECORDS.map(d=>d.company).filter(Boolean))].sort();
-    // Fix 7: holders from same company
-    return pageHdr+`
-    <div style="max-width:600px;margin:0 auto">
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
-        <div style="background:var(--bg3);padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-          <span style="font-weight:600;font-size:13px">New DSC Record</span>
-          <span style="font-family:var(--mono);font-weight:700;color:var(--accent);font-size:14px">${nextSerial}</span>
-        </div>
-        <div style="padding:16px">
-          <div class="g2">
-            <div class="form-row">
-              <label class="form-label">Company Name *</label>
-              <input class="form-input" id="dsc-company" placeholder="Type or select existing…" autofocus
-                list="dsc-company-list"
-                oninput="dscUpdateHolderList()"/>
-              <datalist id="dsc-company-list">
-                ${existingCompanies.map(c=>`<option value="${c}">`).join('')}
-              </datalist>
-            </div>
-            <div class="form-row"><label class="form-label">PAN No.</label>
-              <input class="form-input" id="dsc-pan" placeholder="AAABC1234D" maxlength="10" style="text-transform:uppercase"/>
-            </div>
-          </div>
-          <div class="g2">
-            <div class="form-row">
-              <label class="form-label">Holder Name</label>
-              <input class="form-input" id="dsc-holder" placeholder="Authorised person name" list="dsc-holder-list"/>
-              <datalist id="dsc-holder-list"></datalist>
-              <div style="font-size:10px;color:var(--text3);margin-top:3px">Start typing company name to see existing holders</div>
-            </div>
-            <div class="form-row"><label class="form-label">DSC Class</label>
-              <select class="form-select" id="dsc-class">
-                <option>Class 2</option><option selected>Class 3</option><option>DGFT</option><option>Organisation</option>
-              </select>
-            </div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Entry Date *</label>
-              <input class="form-input" type="date" id="dsc-entry-date" value="${today()}"/>
-            </div>
-            <div class="form-row"><label class="form-label">Expiry Date</label>
-              <input class="form-input" type="date" id="dsc-expiry"/>
-            </div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Given By (person)</label>
-              <input class="form-input" id="dsc-given-by" placeholder="Name of person who gave DSC"/>
-            </div>
-            <div class="form-row"><label class="form-label">Given By Contact</label>
-              <input class="form-input" id="dsc-given-contact" placeholder="Phone number"/>
-            </div>
-          </div>
-          <div class="g2">
-            <div class="form-row"><label class="form-label">Current Location</label>
-              <select class="form-select" id="dsc-location">
-                <option value="office">🏢 In Office</option>
-                <option value="cs">💼 With CS</option>
-                <option value="client">👤 With Client</option>
-              </select>
-            </div>
-            <div class="form-row"><label class="form-label">Currently With</label>
-              <input class="form-input" id="dsc-current-with" placeholder="Name / team holding DSC"/>
-            </div>
-          </div>
-          <div class="form-row"><label class="form-label">DSC Password <span style="font-size:10px;color:var(--red)">(admin only — stored securely)</span></label>
-            <input class="form-input" id="dsc-password" type="password" placeholder="Token password (optional)" autocomplete="off"/>
-          </div>
-          <div class="form-row"><label class="form-label">Remarks</label>
-            <input class="form-input" id="dsc-remarks" placeholder="Any notes about this DSC"/>
-          </div>
-          <button class="btn btn-primary w-full" style="margin-top:8px" onclick="saveDscRecord()">Save DSC Record</button>
-        </div>
-      </div>
-    </div>`;
+    // Unique holders from existing records for datalist
+    const existingHolders=[...new Set(DSC_RECORDS.map(d=>d.holderName).filter(Boolean))].sort();
+    // Also include CLIENTS names
+    const clientNames=CLIENTS.map(c=>c.name).filter(Boolean);
+    const allCompanies=[...new Set([...existingCompanies,...clientNames])].sort();
+
+    return pageHdr()
+      +tabBar()
+      +'<div style="max-width:600px;margin:0 auto">'
+      +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">'
+      +'<div style="background:var(--bg3);padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">'
+      +'<span style="font-weight:600;font-size:13px">New DSC Record</span>'
+      +'<span style="font-family:var(--mono);font-weight:700;color:var(--accent);font-size:14px">'+nextSerial+'</span>'
+      +'</div>'
+      +'<div style="padding:16px">'
+      // Company name - datalist
+      +'<div class="form-row"><label class="form-label">Company Name *</label>'
+      +'<input class="form-input" id="dsc-company" list="dsc-company-list" placeholder="Type or select company…" autofocus oninput="dscUpdateHolderList(this.value)"/>'
+      +'<datalist id="dsc-company-list">'+allCompanies.map(n=>'<option value="'+escHtml(n)+'">').join('')+'</datalist>'
+      +'</div>'
+      // Holder name - datalist filtered by company
+      +'<div class="form-row"><label class="form-label">Holder / Authorised Person</label>'
+      +'<input class="form-input" id="dsc-holder" list="dsc-holder-list" placeholder="Select or type holder name"/>'
+      +'<datalist id="dsc-holder-list">'+existingHolders.map(n=>'<option value="'+escHtml(n)+'">').join('')+'</datalist>'
+      +'</div>'
+      +'<div class="g2">'
+      +'<div class="form-row"><label class="form-label">PAN No.</label><input class="form-input" id="dsc-pan" placeholder="AAABC1234D" maxlength="10" style="text-transform:uppercase"/></div>'
+      +'<div class="form-row"><label class="form-label">DSC Class</label>'
+      +'<select class="form-select" id="dsc-class"><option>Class 2</option><option>Class 3</option><option>DGFT</option><option>Organisation</option></select></div>'
+      +'</div>'
+      +'<div class="g2">'
+      +'<div class="form-row"><label class="form-label">Entry Date *</label><input class="form-input" type="date" id="dsc-entry-date" value="'+today()+'"/></div>'
+      +'<div class="form-row"><label class="form-label">Expiry Date</label><input class="form-input" type="date" id="dsc-expiry"/></div>'
+      +'</div>'
+      +'<div class="g2">'
+      +'<div class="form-row"><label class="form-label">Given By</label><input class="form-input" id="dsc-given-by" list="dsc-person-list" placeholder="Who handed over DSC"/><datalist id="dsc-person-list">'+[...new Set(DSC_MOVEMENTS.map(m=>m.personName).filter(Boolean))].map(n=>'<option value="'+escHtml(n)+'">').join('')+'</datalist></div>'
+      +'<div class="form-row"><label class="form-label">Given By Contact</label><input class="form-input" id="dsc-given-contact" placeholder="Phone number"/></div>'
+      +'</div>'
+      +'<div class="g2">'
+      +'<div class="form-row"><label class="form-label">Current Location</label>'
+      +'<select class="form-select" id="dsc-location"><option value="office">🏢 In Office</option><option value="cs">💼 With CS</option><option value="client">👤 With Client</option></select></div>'
+      +'<div class="form-row"><label class="form-label">Currently With</label><input class="form-input" id="dsc-current-with" placeholder="Name / team holding DSC"/></div>'
+      +'</div>'
+      +'<div class="form-row"><label class="form-label">DSC Password <span style="font-size:10px;color:var(--red)">(admin-only)</span></label>'
+      +'<input class="form-input" id="dsc-password" type="password" placeholder="Token password (optional)" autocomplete="new-password"/></div>'
+      +'<div class="form-row"><label class="form-label">Remarks</label><input class="form-input" id="dsc-remarks" placeholder="Any notes…"/></div>'
+      +'<button class="btn btn-primary w-full" style="margin-top:8px" onclick="saveDscRecord()">Save DSC Record</button>'
+      +'</div></div></div>';
   }
 
-  return pageHdr+`<div style="text-align:center;padding:2rem;color:var(--text3)">Select a tab</div>`;
+  return pageHdr()+tabBar();
 }
 
-function dscUpdateHolderList(){
-  const company=(document.getElementById('dsc-company')?.value||'').toLowerCase();
-  const datalist=document.getElementById('dsc-holder-list');
-  if(!datalist) return;
-  const holders=[...new Set(DSC_RECORDS.filter(d=>(d.company||'').toLowerCase().includes(company)&&d.holderName).map(d=>d.holderName))];
-  datalist.innerHTML=holders.map(n=>`<option value="${n}">`).join('');
+// Helper: update holder datalist based on selected company
+function dscUpdateHolderList(company){
+  const list=document.getElementById('dsc-holder-list');
+  if(!list) return;
+  const holders=[...new Set(DSC_RECORDS.filter(d=>(d.company||'').toLowerCase()===company.toLowerCase()).map(d=>d.holderName).filter(Boolean))];
+  list.innerHTML=holders.map(n=>'<option value="'+escHtml(n)+'">').join('');
 }
+
+// Helper: quick action buttons per DSC row
+function dscQuickBtns(d, isAdmin){
+  const st=dscStatus(d);
+  const btns=[];
+  btns.push('<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscDetail\',{id:\''+d.id+'\'})">View</button>');
+  if(isAdmin) btns.push('<button class="btn btn-ghost btn-xs" onclick="openModal(\'dscEdit\',{id:\''+d.id+'\'})">Edit</button>');
+  if(isAdmin){
+    if(st==='in_office'){
+      btns.push('<button class="btn btn-xs" style="background:var(--blue-bg);color:var(--blue)" onclick="dscMarkWithCS(\''+d.id+'\')">→ CS</button>');
+      btns.push('<button class="btn btn-xs" style="background:var(--amber-bg);color:var(--amber)" onclick="openModal(\'dscOutward\',{dscId:\''+d.id+'\'})">→ Client</button>');
+    }
+    if(st==='with_cs'){
+      btns.push('<button class="btn btn-xs" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="dscMarkInwardFromCS(\''+d.id+'\')">← Office</button>');
+    }
+    if(st==='with_client'){
+      btns.push('<button class="btn btn-xs" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="openModal(\'dscInward\',{dscId:\''+d.id+'\'})">← Return</button>');
+    }
+  }
+  return btns.join('');
+}
+
 
 async function saveDscRecord(){
   const company=(document.getElementById('dsc-company')?.value||'').trim();
@@ -3582,6 +3581,271 @@ async function processDscImport(){
   toast(`Import complete: ${imported} added, ${skipped} skipped ✓`);
   dscFilter.tab=0;render();
 }
+
+// ─── DSC Quick Actions ──────────────────────────────────────────────────────
+
+async function dscMarkWithCS(dscId){
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  if(!d){toast('DSC not found');return;}
+  await fbUpd('dsc_records/'+dscId,{location:'cs',currentWith:'CS Office',updatedAt:today()});
+  const movId=uid();
+  await fbSet('dsc_movements/'+movId,{id:movId,dscId,date:today(),direction:'out',personName:'CS Office',contact:'',location:'cs',recordedBy:currentUser.id,remarks:'Sent to CS Office',createdAt:today()});
+  toast('✓ '+d.serial+' — Marked With CS');
+}
+
+async function dscMarkInwardFromCS(dscId){
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  if(!d){toast('DSC not found');return;}
+  await fbUpd('dsc_records/'+dscId,{location:'office',currentWith:'',updatedAt:today()});
+  const movId=uid();
+  await fbSet('dsc_movements/'+movId,{id:movId,dscId,date:today(),direction:'in',personName:'CS Office',contact:'',location:'office',recordedBy:currentUser.id,remarks:'Returned from CS Office',createdAt:today()});
+  toast('✓ '+d.serial+' — Back In Office');
+}
+
+// Modal for outward (in_office → with_client)
+function dscOutwardHTML({dscId}){
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  if(!d) return mHdr('Outward')+'<p style="padding:12px;color:var(--red)">DSC not found</p>';
+  const allPersons=[...new Set([...DSC_MOVEMENTS.map(m=>m.personName),...DSC_RECORDS.map(r=>r.givenBy),...DSC_RECORDS.map(r=>r.holderName)].filter(Boolean))];
+  return `${mHdr('Mark Outward — '+d.serial)}
+  <div style="background:var(--bg3);padding:8px 12px;border-radius:var(--r);margin-bottom:12px;font-size:12px">
+    <b>${escHtml(d.company)}</b> · ${escHtml(d.holderName||'')} · ${dscStatusBadge(d)}
+  </div>
+  <div class="form-row"><label class="form-label">Date</label><input class="form-input" type="date" id="dsc-ow-date" value="${today()}"/></div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Person Taking DSC *</label>
+      <input class="form-input" id="dsc-ow-person" list="dsc-ow-persons" placeholder="Name of person"/>
+      <datalist id="dsc-ow-persons">${allPersons.map(n=>'<option value="'+escHtml(n)+'">').join('')}</datalist>
+    </div>
+    <div class="form-row"><label class="form-label">Contact No.</label>
+      <input class="form-input" id="dsc-ow-contact" placeholder="Phone number"/>
+    </div>
+  </div>
+  <div class="form-row"><label class="form-label">Purpose / Remarks</label>
+    <input class="form-input" id="dsc-ow-remarks" placeholder="e.g. For filing, MCA Portal, etc."/>
+  </div>
+  <button class="btn btn-primary w-full mt-8" onclick="saveDscOutward('${dscId}')">Mark Outward</button>`;
+}
+
+async function saveDscOutward(dscId){
+  const person=(document.getElementById('dsc-ow-person')?.value||'').trim();
+  if(!person){toast('Enter person name');return;}
+  const date=document.getElementById('dsc-ow-date')?.value||today();
+  const contact=document.getElementById('dsc-ow-contact')?.value||'';
+  const remarks=document.getElementById('dsc-ow-remarks')?.value||'';
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  await fbUpd('dsc_records/'+dscId,{location:'client',currentWith:person,updatedAt:today()});
+  const movId=uid();
+  await fbSet('dsc_movements/'+movId,{id:movId,dscId,date,direction:'out',personName:person,contact,location:'client',recordedBy:currentUser.id,remarks:remarks||'Issued outward',createdAt:today()});
+  closeModal();
+  toast('✓ '+(d?.serial||'DSC')+' — Issued to '+person);
+}
+
+// Modal for inward (with_client → in_office)
+function dscInwardHTML({dscId}){
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  if(!d) return mHdr('Inward')+'<p style="padding:12px;color:var(--red)">DSC not found</p>';
+  return `${mHdr('Mark Inward — '+d.serial)}
+  <div style="background:var(--bg3);padding:8px 12px;border-radius:var(--r);margin-bottom:12px;font-size:12px">
+    <b>${escHtml(d.company)}</b> · Currently with: <b>${escHtml(d.currentWith||'—')}</b>
+  </div>
+  <div class="form-row"><label class="form-label">Date Returned</label><input class="form-input" type="date" id="dsc-iw-date" value="${today()}"/></div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Returned By *</label>
+      <input class="form-input" id="dsc-iw-person" value="${escHtml(d.currentWith||'')}" placeholder="Person returning DSC"/>
+    </div>
+    <div class="form-row"><label class="form-label">Contact No.</label>
+      <input class="form-input" id="dsc-iw-contact" placeholder="Phone number"/>
+    </div>
+  </div>
+  <div class="form-row"><label class="form-label">Remarks</label>
+    <input class="form-input" id="dsc-iw-remarks" placeholder="e.g. After MCA filing"/>
+  </div>
+  <button class="btn btn-primary w-full mt-8" onclick="saveDscInward('${dscId}')">Mark Inward</button>`;
+}
+
+async function saveDscInward(dscId){
+  const person=(document.getElementById('dsc-iw-person')?.value||'').trim();
+  if(!person){toast('Enter person name');return;}
+  const date=document.getElementById('dsc-iw-date')?.value||today();
+  const contact=document.getElementById('dsc-iw-contact')?.value||'';
+  const remarks=document.getElementById('dsc-iw-remarks')?.value||'';
+  const d=DSC_RECORDS.find(x=>x.id===dscId);
+  await fbUpd('dsc_records/'+dscId,{location:'office',currentWith:'',updatedAt:today()});
+  const movId=uid();
+  await fbSet('dsc_movements/'+movId,{id:movId,dscId,date,direction:'in',personName:person,contact,location:'office',recordedBy:currentUser.id,remarks:remarks||'Returned inward',createdAt:today()});
+  closeModal();
+  toast('✓ '+(d?.serial||'DSC')+' — Returned from '+person+', now In Office');
+}
+
+// ─── escHtml helper (if not already defined) ─────────────────────────────
+function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// ─── Import Excel ──────────────────────────────────────────────────────────
+function dscImportHTML(){
+  return `${mHdr('Import DSC Records')}
+  <div style="background:var(--amber-bg);border:1px solid rgba(245,166,35,.3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--amber)">
+    📋 Download sample, fill in your data, then upload. Existing serial numbers will be skipped.
+  </div>
+  <button class="btn btn-ghost btn-sm w-full" style="margin-bottom:12px" onclick="dscDownloadSample()">⬇ Download Sample Excel</button>
+  <div class="form-row"><label class="form-label">Upload Excel / CSV</label>
+    <input type="file" class="form-input" id="dsc-import-file" accept=".xlsx,.xls,.csv" onchange="dscPreviewImport(this)"/>
+  </div>
+  <div id="dsc-import-preview" style="margin-top:10px"></div>
+  <button class="btn btn-primary w-full mt-8" id="dsc-import-btn" style="display:none" onclick="dscDoImport()">Import Records</button>`;
+}
+
+function dscDownloadSample(){
+  // Build CSV sample
+  const headers=['Company Name','Holder Name','PAN No','DSC Class','Entry Date (YYYY-MM-DD)','Expiry Date (YYYY-MM-DD)','Given By','Given By Contact','Current Location (office/cs/client)','Currently With','Remarks'];
+  const rows=[
+    ['ABC Private Limited','Ramesh Shah','AAABC1234A','Class 3','2025-01-15','2027-01-14','Ramesh Shah','9876543210','office','',''],
+    ['XYZ Industries Ltd','Suresh Patel','BBBXZ5678B','Class 2','2025-02-01','2026-01-31','Client Office','9998887770','client','Suresh Patel','Collected from client'],
+  ];
+  const csv=[headers,...rows].map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='DSC_Import_Sample.csv';a.click();
+  URL.revokeObjectURL(url);
+  toast('Sample downloaded ✓');
+}
+
+let _dscImportData=[];
+async function dscPreviewImport(input){
+  const file=input.files?.[0];
+  const preview=document.getElementById('dsc-import-preview');
+  const importBtn=document.getElementById('dsc-import-btn');
+  if(!file||!preview||!importBtn){return;}
+  preview.innerHTML='<div style="color:var(--text3);font-size:12px">Reading file…</div>';
+  try{
+    const text=await file.text();
+    const rows=text.split('\n').filter(r=>r.trim());
+    const headers=rows[0].split(',').map(c=>c.replace(/^"|"$/g,'').trim().toLowerCase());
+    _dscImportData=[];
+    for(let i=1;i<rows.length;i++){
+      const cols=rows[i].match(/(".*?"|[^,]+)(?=,|$)/g)||rows[i].split(',');
+      const clean=cols.map(c=>(c||'').replace(/^"|"$/g,'').trim());
+      const company=clean[headers.findIndex(h=>h.includes('company'))]||'';
+      if(!company) continue;
+      _dscImportData.push({
+        company,
+        holderName:clean[headers.findIndex(h=>h.includes('holder'))]||'',
+        panNo:clean[headers.findIndex(h=>h.includes('pan'))]||'',
+        dscClass:clean[headers.findIndex(h=>h.includes('class'))]||'Class 3',
+        entryDate:clean[headers.findIndex(h=>h.includes('entry'))]||today(),
+        expiryDate:clean[headers.findIndex(h=>h.includes('expiry'))]||'',
+        givenBy:clean[headers.findIndex(h=>h.includes('given by')&&!h.includes('contact'))]||'',
+        givenByContact:clean[headers.findIndex(h=>h.includes('contact'))]||'',
+        location:clean[headers.findIndex(h=>h.includes('location'))]||'office',
+        currentWith:clean[headers.findIndex(h=>h.includes('currently'))]||'',
+        remarks:clean[headers.findIndex(h=>h.includes('remark'))]||'',
+      });
+    }
+    if(!_dscImportData.length){preview.innerHTML='<div style="color:var(--red);font-size:12px">No valid rows found. Check file format.</div>';return;}
+    preview.innerHTML='<div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">Preview ('+_dscImportData.length+' records):</div>'
+      +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;max-height:200px;overflow-y:auto">'
+      +_dscImportData.map(d=>'<div style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px"><b>'+escHtml(d.company)+'</b> — '+escHtml(d.holderName||'—')+' <span style="color:var(--text3)">'+escHtml(d.panNo||'')+'</span></div>').join('')
+      +'</div>';
+    importBtn.style.display='block';
+    importBtn.textContent='Import '+_dscImportData.length+' Records';
+  }catch(e){preview.innerHTML='<div style="color:var(--red);font-size:12px">Error reading file: '+e.message+'</div>';}
+}
+
+async function dscDoImport(){
+  if(!_dscImportData.length){toast('No data to import');return;}
+  const existingSerials=new Set(DSC_RECORDS.map(d=>d.serial));
+  let imported=0,skipped=0;
+  for(const row of _dscImportData){
+    const serial=nextDscSerial();
+    if(existingSerials.has(serial)){skipped++;continue;}
+    const id=uid();
+    const rec={id,serial,...row,active:!(row.expiryDate&&row.expiryDate<=today()),createdBy:currentUser.id,createdAt:today()};
+    await fbSet('dsc_records/'+id,rec);
+    existingSerials.add(serial);
+    // Add initial movement
+    await fbSet('dsc_movements/'+uid(),{id:uid(),dscId:id,date:row.entryDate||today(),direction:'in',personName:row.givenBy||'Import',contact:row.givenByContact||'',location:row.location||'office',recordedBy:currentUser.id,remarks:'Imported',createdAt:today()});
+    imported++;
+  }
+  _dscImportData=[];
+  closeModal();
+  toast('✓ Imported '+imported+' DSC records'+(skipped?' ('+skipped+' skipped)':''));
+}
+
+// ─── Edit DSC ──────────────────────────────────────────────────────────────
+function dscEditHTML({id}){
+  const d=DSC_RECORDS.find(x=>x.id===id);
+  if(!d) return mHdr('Edit DSC')+'<p style="padding:12px;color:var(--red)">Not found</p>';
+  const isAdmin=currentUser.role==='superadmin'||currentUser.role==='manager';
+  if(!isAdmin) return mHdr('Edit DSC')+'<p style="padding:12px;color:var(--red)">Admins only</p>';
+  const allCompanies=[...new Set([...DSC_RECORDS.map(r=>r.company),...CLIENTS.map(c=>c.name)].filter(Boolean))].sort();
+  const allHolders=[...new Set(DSC_RECORDS.map(r=>r.holderName).filter(Boolean))].sort();
+  return `${mHdr('Edit DSC — '+d.serial)}
+  <div class="form-row"><label class="form-label">Company Name *</label>
+    <input class="form-input" id="de-company" value="${escHtml(d.company||'')}" list="de-company-list"/>
+    <datalist id="de-company-list">${allCompanies.map(n=>'<option value="'+escHtml(n)+'">').join('')}</datalist>
+  </div>
+  <div class="form-row"><label class="form-label">Holder / Authorised Person</label>
+    <input class="form-input" id="de-holder" value="${escHtml(d.holderName||'')}" list="de-holder-list"/>
+    <datalist id="de-holder-list">${allHolders.map(n=>'<option value="'+escHtml(n)+'">').join('')}</datalist>
+  </div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">PAN No.</label>
+      <input class="form-input" id="de-pan" value="${escHtml(d.panNo||'')}" maxlength="10" style="text-transform:uppercase"/></div>
+    <div class="form-row"><label class="form-label">DSC Class</label>
+      <select class="form-select" id="de-class">
+        ${['Class 2','Class 3','DGFT','Organisation'].map(c=>'<option'+(d.dscClass===c?' selected':'')+'>'+c+'</option>').join('')}
+      </select></div>
+  </div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Entry Date</label>
+      <input class="form-input" type="date" id="de-entry" value="${d.entryDate||''}"/></div>
+    <div class="form-row"><label class="form-label">Expiry Date</label>
+      <input class="form-input" type="date" id="de-expiry" value="${d.expiryDate||''}"/></div>
+  </div>
+  <div class="form-row"><label class="form-label">Current Location</label>
+    <select class="form-select" id="de-location">
+      <option value="office"${d.location==='office'?' selected':''}>🏢 In Office</option>
+      <option value="cs"${d.location==='cs'?' selected':''}>💼 With CS</option>
+      <option value="client"${d.location==='client'?' selected':''}>👤 With Client</option>
+    </select>
+  </div>
+  <div class="form-row"><label class="form-label">Currently With</label>
+    <input class="form-input" id="de-with" value="${escHtml(d.currentWith||'')}"/></div>
+  <div class="form-row"><label class="form-label">DSC Password <span style="font-size:10px;color:var(--red)">(admin only)</span></label>
+    <input class="form-input" id="de-password" type="password" value="${escHtml(d.password||'')}" autocomplete="new-password"/></div>
+  <div class="form-row"><label class="form-label">Remarks</label>
+    <input class="form-input" id="de-remarks" value="${escHtml(d.remarks||'')}"/></div>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button class="btn btn-primary" style="flex:1" onclick="saveDscEdit('${id}')">Save Changes</button>
+    <button class="btn btn-danger btn-sm" onclick="if(confirm('Mark this DSC as inactive?'))fbUpd('dsc_records/${id}',{active:false}).then(()=>{closeModal();toast('DSC marked inactive');})">Deactivate</button>
+  </div>`;
+}
+
+async function saveDscEdit(id){
+  const company=(document.getElementById('de-company')?.value||'').trim();
+  if(!company){toast('Company name required');return;}
+  const expiryDate=document.getElementById('de-expiry')?.value||'';
+  const active=!(expiryDate&&expiryDate<=today()); // auto-set inactive if expired
+  const updates={
+    company,
+    holderName:(document.getElementById('de-holder')?.value||'').trim(),
+    panNo:(document.getElementById('de-pan')?.value||'').trim().toUpperCase(),
+    dscClass:document.getElementById('de-class')?.value||'Class 3',
+    entryDate:document.getElementById('de-entry')?.value||'',
+    expiryDate,
+    location:document.getElementById('de-location')?.value||'office',
+    currentWith:(document.getElementById('de-with')?.value||'').trim(),
+    password:document.getElementById('de-password')?.value||'',
+    remarks:(document.getElementById('de-remarks')?.value||'').trim(),
+    active,
+    updatedAt:today()
+  };
+  await fbUpd('dsc_records/'+id,updates);
+  closeModal();
+  toast('DSC updated ✓'+(active?'':' — Marked inactive (expired)'));
+}
+
 // ═══════════════════════════════════════
 //  BIND ALL
 // ═══════════════════════════════════════
@@ -4611,67 +4875,112 @@ function updatePinDots(){
 async function doEmailLogin(){
   const emailInp=document.getElementById('login-email');
   const passInp=document.getElementById('login-password');
-  const email=(emailInp?.value||loginEmail).trim().toLowerCase();
+  const rawInput=(emailInp?.value||loginEmail).trim().toLowerCase();
   const password=passInp?.value||loginPassword;
 
-  if(!email){loginError='Please enter your email';renderLogin();return;}
+  if(!rawInput){loginError='Please enter your email or username';renderLogin();return;}
   if(!password){loginError='Please enter your password';renderLogin();return;}
 
   loginLoading=true;loginError='';renderLogin();
 
-  try {
-    // Sign into Firebase Auth with real email + password
-    const cred=await auth.signInWithEmailAndPassword(email,password);
-    const fbUser=cred.user;
+  // ── Step 1: Find the matching user record in our database ──
+  let matched=USERS.find(u=>(u.email||'').toLowerCase()===rawInput);
+  if(!matched) matched=USERS.find(u=>(u.username||'').toLowerCase()===rawInput);
 
-    // Find matching user in our USERS array by email OR username
-    const inputLower=email.trim().toLowerCase();
-    let matched=USERS.find(u=>(u.email||'').toLowerCase()===inputLower);
-    if(!matched){
-      // Try username match
-      matched=USERS.find(u=>(u.username||'').toLowerCase()===inputLower);
-      if(matched){
-        // Re-authenticate with real email
-        await auth.signOut();
-        try {
-          const realEmail=matched.email;
-          const cred2=await auth.signInWithEmailAndPassword(realEmail, password);
-        } catch(e2){
-          loginError='Incorrect username or password';
-          loginLoading=false;renderLogin();return;
+  if(!matched){
+    loginLoading=false;
+    loginError='No account found for that email/username. Contact your admin.';
+    renderLogin();return;
+  }
+  if(matched.active===false){
+    loginLoading=false;
+    loginError='Your account has been deactivated. Contact your admin.';
+    renderLogin();return;
+  }
+
+  const realEmail=matched.email;
+  if(!realEmail){
+    loginLoading=false;
+    loginError='This account has no email set. Contact your admin.';
+    renderLogin();return;
+  }
+
+  // ── Step 2: Check if admin set a new password (pendingPasswordReset) ──
+  // If so, we need to recreate the Firebase Auth account with the new password.
+  if(matched.pendingPasswordReset){
+    const newPwd=matched.pendingPasswordReset;
+    // Try signing in with the NEW password first (maybe already applied)
+    try {
+      await auth.signInWithEmailAndPassword(realEmail, newPwd);
+      // New password works - clear the pending flag
+      await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
+      toast('✓ Password updated successfully.');
+      // Fall through to complete login below
+    } catch(tryNew){
+      // New password didn't work - try old password then force-update
+      try {
+        const oldCred=await auth.signInWithEmailAndPassword(realEmail, password);
+        // Old password worked - now update to new password
+        await oldCred.user.updatePassword(newPwd);
+        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
+        toast('✓ Password has been updated by admin.');
+      } catch(tryOld){
+        if(tryOld.code==='auth/user-not-found'||tryOld.code==='auth/invalid-credential'){
+          // Account doesn't exist yet (old migrated user) - create with new password
+          try {
+            await auth.createUserWithEmailAndPassword(realEmail, newPwd);
+            await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
+            toast('✓ Account set up with new password.');
+          } catch(createErr){
+            loginLoading=false;
+            loginError='Account setup failed: '+createErr.code;
+            renderLogin();return;
+          }
+        } else {
+          loginLoading=false;
+          loginError='Incorrect password.';
+          renderLogin();return;
         }
       }
     }
-    if(!matched){
-      await auth.signOut();
-      loginError='No account found. Check your email/username or contact admin.';
-      loginLoading=false;renderLogin();return;
-    }
-    // Check active status
-    if(matched.active===false){
-      await auth.signOut();
-      loginError='Your account has been deactivated. Contact your admin.';
-      loginLoading=false;renderLogin();return;
-    }
-
-    // Logged in successfully
-    // Handle pending password reset set by admin
-    if(matched.pendingPasswordReset){
-      const newPwd=matched.pendingPasswordReset;
-      try {
-        // Reauthenticate with current (old) password to ensure fresh token
-        const {EmailAuthProvider}=await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js').catch(()=>({EmailAuthProvider:null}));
-        // Direct updatePassword right after signIn - token is fresh
-        await cred.user.updatePassword(newPwd);
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-        
-        toast('✓ Your password has been updated by admin. New password is now active.');
-      } catch(pe){
-        /* auth warn removed */
-        // Still clear the pending reset to avoid infinite loop
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
+  } else {
+    // ── Step 3: Normal login — sign in with real email + entered password ──
+    try {
+      await auth.signInWithEmailAndPassword(realEmail, password);
+    } catch(signInErr){
+      if(signInErr.code==='auth/user-not-found'||signInErr.code==='auth/invalid-credential'){
+        // Old user: no Firebase Auth account yet — create it now (first login after migration)
+        try {
+          await auth.createUserWithEmailAndPassword(realEmail, password);
+          toast('✓ Account activated. You can use this password next time.');
+        } catch(createErr){
+          loginLoading=false;
+          if(createErr.code==='auth/email-already-in-use'){
+            loginError='Incorrect password.';
+          } else {
+            loginError='Login failed: '+createErr.code;
+          }
+          renderLogin();return;
+        }
+      } else if(signInErr.code==='auth/wrong-password'){
+        loginLoading=false;
+        loginError='Incorrect password.';
+        renderLogin();return;
+      } else if(signInErr.code==='auth/too-many-requests'){
+        loginLoading=false;
+        loginError='Too many attempts. Please wait a moment.';
+        renderLogin();return;
+      } else if(signInErr.code==='auth/network-request-failed'){
+        loginLoading=false;
+        loginError='Network error. Check your connection.';
+        renderLogin();return;
+      } else {
+        loginLoading=false;
+        loginError='Sign in failed: '+signInErr.code;
+        renderLogin();return;
       }
     }
+  }
     currentUser={...matched,pendingPasswordReset:null};
     LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null}); // stripped of sensitive fields
     loginEmail='';loginPassword='';loginError='';loginLoading=false;
@@ -4693,19 +5002,6 @@ async function doEmailLogin(){
 
     requestDesktopNotifPermission();
     render();
-  } catch(e){
-    loginLoading=false;
-    if(e.code==='auth/user-not-found'||e.code==='auth/wrong-password'||e.code==='auth/invalid-credential'||e.code==='auth/invalid-email'){
-      loginError='Incorrect email or password';
-    } else if(e.code==='auth/too-many-requests'){
-      loginError='Too many attempts. Please wait a moment and try again.';
-    } else if(e.code==='auth/network-request-failed'){
-      loginError='Network error. Check your connection.';
-    } else {
-      loginError='Sign in failed: '+e.code;
-    }
-    renderLogin();
-  }
 }
 // Legacy alias
 async function attemptPinLogin(){ await doEmailLogin(); }
@@ -7452,6 +7748,9 @@ function modalHTML(){
     newCert:()=>newCertHTML(data),
     dscDetail:()=>dscDetailHTML(data),
     dscEdit:()=>dscEditHTML(data),
+    dscOutward:()=>dscOutwardHTML(data),
+    dscInward:()=>dscInwardHTML(data),
+    dscImport:()=>dscImportHTML(),
     dscMovement:()=>dscMovementHTML(data),
     dscImport:()=>dscImportHTML(),
     mergeClients:()=>mergeClientsHTML(),
@@ -8565,7 +8864,17 @@ async function updateUser(id){
     if(newPassVal.length<6){toast('Password must be at least 6 characters');return;}
     // Store as pending reset — applied when user next logs in
     await fbUpd('users/'+id, {pendingPasswordReset: newPassVal});
-    toast('Password changed ✓ — user must logout and login again with new password');
+    // Delete old Firebase Auth account (synthetic email) and let new login recreate it
+    const targetUser=USERS.find(u=>u.id===id);
+    if(targetUser?.email){
+      // Try to delete the old synthetic-email Firebase Auth account if it exists
+      // We can't directly manage other users from client SDK,
+      // but our login flow will auto-create on their next login.
+      // Show clear instructions.
+      toast('✓ Password saved. User should log in with: '+targetUser.email+' and the new password.');
+    } else {
+      toast('Password saved ✓ — user must login again with the new password.');
+    }
   } else {
     toast('User updated ✓');
   }

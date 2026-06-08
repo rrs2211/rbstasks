@@ -601,6 +601,21 @@ const SD_TIME_ENTRIES=[
   {id:'te4',taskId:'t3',userId:'u9',date:'2025-04-02',seconds:3600,note:'Client data'},
 ];
 const SD_EMAILJS={serviceId:'',templateId:'',digestTemplateId:'',publicKey:'',enabled:false,gasUrl:'',gasKey:'',replyTo:''};
+const DEFAULT_EMAIL_TEMPLATES={
+  taskAssigned:{subject:'New Task Assigned: {{task}}',
+    body:'Hi {{name}},\n\nYou have been assigned a new task:\n\nTask: {{task}}\nDepartment: {{dept}}\nDue Date: {{due}}\nPriority: {{priority}}\n\nPlease log in to TaskHub to view details.\n\nRegards,\n{{firm}}'},
+  taskClosed:{subject:'Task Completed: {{task}}',
+    body:'Hi {{name}},\n\nThe following task has been completed:\n\nTask: {{task}}\nClient: {{client}}\nCompleted On: {{date}}\n\nRegards,\n{{firm}}'},
+  taskApproved:{subject:'Task Approved: {{task}}',
+    body:'Hi {{name}},\n\nYour task has been approved:\n\nTask: {{task}}\nApproved By: {{approver}}\n\nRegards,\n{{firm}}'},
+  taskRejected:{subject:'Task Rejected: {{task}}',
+    body:'Hi {{name}},\n\nYour task requires revision:\n\nTask: {{task}}\nRejected By: {{approver}}\n\nPlease review and resubmit.\n\nRegards,\n{{firm}}'},
+  dailyDigest:{subject:'Daily Task Digest \u2014 {{date}}',
+    body:'Good morning {{name}},\n\nYour daily task summary:\n\nDUE TODAY:\n{{due_today}}\n\nOVERDUE:\n{{overdue}}\n\nTotal Active Tasks: {{total}}\n\nHave a productive day!\n{{firm}}'},
+  workSummary:{subject:'Work Summary \u2014 {{date}}',
+    body:'Hi {{name}},\n\nWork summary for {{date}}:\n\nTasks Completed: {{completed}}\nTime Logged: {{time}}\nIn Progress: {{in_progress}}\n\nRegards,\n{{firm}}'}
+};
+let EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES};
 
 // CA Firms — separate from billing firms, specifically for certificates/UDIN
 const SD_CA_FIRMS=[
@@ -851,6 +866,10 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     batchLogLoaded=true;
     if(curPage==='tasks'||curPage==='reports') rerender();
   });
+  db.ref('email_templates').on('value',s=>{
+    if(s.val()) EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES,...s.val()};
+    else EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES};
+  });
   db.ref('dsc_records').on('value',s=>{
     DSC_RECORDS=objToArr(s.val()||{});
     if(!loaded.dsc){loaded.dsc=true;checkLoaded();}else render();
@@ -919,7 +938,7 @@ async function testGasEmail(){
   }
 }
 
-function settEmailJSHTML(){const c=EMAILJS_CFG||{};const notifLog2=LS.get('notifLog',[]);return`${mHdr('Email Config')}<div style='background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden'><div style='background:var(--bg3);padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600'>Gmail Relay ${EMAILJS_CFG?.gasUrl?'<span style=\'color:var(--green,#4ade80)\'>Active</span>':'<span style=\'color:var(--text3)\'>Not set</span>'}</div><div style='padding:12px'><div class='form-row'><label class='form-label'>Apps Script URL</label><input class='form-input' id='gas-url' value='${EMAILJS_CFG?.gasUrl||''}' placeholder='https://script.google.com/macros/s/.../exec' style='font-size:11px'/></div><div class='g2'><div class='form-row'><label class='form-label'>Secret Key</label><input class='form-input' type='password' id='gas-key' value='${EMAILJS_CFG?.gasKey||''}' placeholder='Your secret key' autocomplete='new-password'/></div><div class='form-row'><label class='form-label'>Reply-To</label><input class='form-input' id='gas-reply' value='${EMAILJS_CFG?.replyTo||''}' placeholder='info@rbshah.co.in'/></div></div><div style='display:flex;gap:8px;margin-top:8px'><button class='btn btn-primary btn-sm' onclick='saveGasEmailConfig()'>Save Gmail</button><button class='btn btn-ghost btn-sm' onclick='testGasEmail()'>Test Email</button></div></div></div><div style='font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px'>EmailJS (Fallback)</div>${mHdr('Email Notifications (EmailJS)')}<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Configure EmailJS to receive notifications for task assignments, approvals, and daily digests.</div><div class="form-row"><label class="form-label">Public Key</label><input class="form-input" id="ej-pk" value="${c.publicKey||''}"/></div><div class="form-row"><label class="form-label">Service ID</label><input class="form-input" id="ej-svc" value="${c.serviceId||''}"/></div><div class="form-row"><label class="form-label">Template ID</label><input class="form-input" id="ej-tmpl" value="${c.templateId||''}"/></div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="btn btn-primary" style="flex:1" onclick="saveEmailJS()">Save</button><button class="btn btn-ghost btn-sm" onclick="testEmailJS()">Test</button></div><div class="section-label">Recent (${notifLog2.length})</div>${notifLog2.length?`<div style="max-height:120px;overflow-y:auto">${[...notifLog2].reverse().slice(0,10).map(n=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span>${n.subject||'Notification'} \u2192 ${n.to}</span><span style="color:${n.sent?'var(--accent)':'var(--red)'}">${n.sent?'\u2713':'\u2715'}</span></div>`).join('')}</div>`:`<div style="font-size:12px;color:var(--text3)">No notifications sent yet</div>`}`}
+function settEmailJSHTML(){const c=EMAILJS_CFG||{};const notifLog2=LS.get('notifLog',[]);return`${mHdr('Email Config')}<div style='background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden'><div style='background:var(--bg3);padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600'>Gmail Relay ${EMAILJS_CFG?.gasUrl?'<span style=\'color:var(--green,#4ade80)\'>Active</span>':'<span style=\'color:var(--text3)\'>Not set</span>'}</div><div style='padding:12px'><div class='form-row'><label class='form-label'>Apps Script URL</label><input class='form-input' id='gas-url' value='${EMAILJS_CFG?.gasUrl||""}' placeholder='https://script.google.com/macros/s/.../exec' style='font-size:11px'/></div><div class='g2'><div class='form-row'><label class='form-label'>Secret Key</label><input class='form-input' type='password' id='gas-key' value='${EMAILJS_CFG?.gasKey||""}' placeholder='Your secret key' autocomplete='new-password'/></div><div class='form-row'><label class='form-label'>Reply-To</label><input class='form-input' id='gas-reply' value='${EMAILJS_CFG?.replyTo||""}' placeholder='info@rbshah.co.in'/></div></div><div style='display:flex;gap:8px;margin-top:8px'><button class='btn btn-primary btn-sm' onclick='saveGasEmailConfig()'>Save Gmail</button><button class='btn btn-ghost btn-sm' onclick='testGasEmail()'>Test Email</button></div></div></div><div style='font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px'>EmailJS (Fallback)</div>${mHdr('Email Notifications (EmailJS)')}<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Configure EmailJS to receive notifications for task assignments, approvals, and daily digests.</div><div class="form-row"><label class="form-label">Public Key</label><input class="form-input" id="ej-pk" value="${c.publicKey||''}"/></div><div class="form-row"><label class="form-label">Service ID</label><input class="form-input" id="ej-svc" value="${c.serviceId||''}"/></div><div class="form-row"><label class="form-label">Template ID</label><input class="form-input" id="ej-tmpl" value="${c.templateId||''}"/></div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="btn btn-primary" style="flex:1" onclick="saveEmailJS()">Save</button><button class="btn btn-ghost btn-sm" onclick="testEmailJS()">Test</button></div><div class="section-label">Recent (${notifLog2.length})</div>${notifLog2.length?`<div style="max-height:120px;overflow-y:auto">${[...notifLog2].reverse().slice(0,10).map(n=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span>${n.subject||'Notification'} \u2192 ${n.to}</span><span style="color:${n.sent?'var(--accent)':'var(--red)'}">${n.sent?'\u2713':'\u2715'}</span></div>`).join('')}</div>`:`<div style="font-size:12px;color:var(--text3)">No notifications sent yet</div>`}`}
 
 async function saveEmailJS(){const publicKey=document.getElementById('ej-pk')?.value?.trim(),serviceId=document.getElementById('ej-svc')?.value?.trim(),templateId=document.getElementById('ej-tmpl')?.value?.trim();const cfg={publicKey,serviceId,templateId,digestTemplateId:templateId,enabled:!!(publicKey&&serviceId&&templateId)};await fbSet('emailjs_config',cfg);initEmailJS();closeModal();toast(cfg.enabled?'EmailJS enabled \u2713':'Config saved')}
 
@@ -3881,6 +3900,127 @@ async function saveDscEdit(id){
   await fbUpd('dsc_records/'+id,updates);
   closeModal();
   toast('DSC updated ✓'+(active?'':' — Marked inactive (expired)'));
+}
+
+
+// ─── Email Template Helper ─────────────────────────────────────────────────
+function applyTemplate(templateKey, vars){
+  const tmpl=EMAIL_TEMPLATES[templateKey]||DEFAULT_EMAIL_TEMPLATES[templateKey];
+  if(!tmpl) return {subject:'',body:''};
+  const firm=getActiveFirm()?.name||'R B Shah & Associates';
+  const allVars={...vars,firm,date:fmtDate(today())};
+  let subject=tmpl.subject;
+  let body=tmpl.body;
+  Object.entries(allVars).forEach(([k,v])=>{
+    const re=new RegExp('{{'+k+'}}','g');
+    subject=subject.replace(re,v||'');
+    body=body.replace(re,v||'');
+  });
+  // Clean up any unused {{vars}}
+  subject=subject.replace(/\{\{[^}]+\}\}/g,'');
+  body=body.replace(/\{\{[^}]+\}\}/g,'');
+  return {subject,body};
+}
+
+
+function settEmailTemplatesHTML(){
+  const templates=[
+    {key:'taskAssigned',  label:'Task Assigned',    icon:'📋', desc:'Sent when a task is assigned to someone'},
+    {key:'taskClosed',    label:'Task Completed',   icon:'✅', desc:'Sent when a task is marked complete'},
+    {key:'taskApproved',  label:'Task Approved',    icon:'👍', desc:'Sent when a task is approved'},
+    {key:'taskRejected',  label:'Task Rejected',    icon:'❌', desc:'Sent when a task is rejected'},
+    {key:'dailyDigest',   label:'Daily Digest',     icon:'🌅', desc:'Morning summary of due and overdue tasks'},
+    {key:'workSummary',   label:'Work Summary',     icon:'📊', desc:'End-of-day summary of work done'},
+  ];
+  const sel=window._tmplSel||'taskAssigned';
+  const cur=EMAIL_TEMPLATES[sel]||DEFAULT_EMAIL_TEMPLATES[sel];
+  const def=DEFAULT_EMAIL_TEMPLATES[sel];
+  const vars={
+    taskAssigned:  ['{{name}}','{{task}}','{{dept}}','{{due}}','{{priority}}','{{firm}}'],
+    taskClosed:    ['{{name}}','{{task}}','{{client}}','{{date}}','{{firm}}'],
+    taskApproved:  ['{{name}}','{{task}}','{{approver}}','{{firm}}'],
+    taskRejected:  ['{{name}}','{{task}}','{{approver}}','{{firm}}'],
+    dailyDigest:   ['{{name}}','{{date}}','{{due_today}}','{{overdue}}','{{total}}','{{firm}}'],
+    workSummary:   ['{{name}}','{{date}}','{{completed}}','{{time}}','{{in_progress}}','{{firm}}'],
+  };
+
+  return mHdr('Email Templates')
+  // Tab bar
+  +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">'
+  +templates.map(t=>'<button class="btn btn-'+(sel===t.key?'primary':'ghost')+' btn-xs" onclick="window._tmplSel=\''+t.key+'\';render()">'+t.icon+' '+t.label+'</button>').join('')
+  +'</div>'
+  // Template info
+  +'<div style="font-size:11px;color:var(--text3);margin-bottom:10px">'
+  +(templates.find(t=>t.key===sel)?.desc||'')
+  +'<br><b>Available variables:</b> '+(vars[sel]||[]).join(' ')
+  +'</div>'
+  // Subject
+  +'<div class="form-row"><label class="form-label">Subject Line</label>'
+  +'<input class="form-input" id="et-subject" value="'+(cur?.subject||'').replace(/"/g,'&quot;')+'" style="font-family:var(--mono);font-size:12px"/>'
+  +'</div>'
+  // Body
+  +'<div class="form-row"><label class="form-label">Email Body</label>'
+  +'<textarea class="form-input" id="et-body" rows="10" style="font-family:var(--mono);font-size:12px;white-space:pre">'
+  +(cur?.body||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  +'</textarea>'
+  +'</div>'
+  // Buttons
+  +'<div style="display:flex;gap:8px;margin-top:4px">'
+  +'<button class="btn btn-primary btn-sm" onclick="saveEmailTemplate(\'' +sel+ '\')">Save Template</button>'
+  +'<button class="btn btn-ghost btn-sm" onclick="resetEmailTemplate(\'' +sel+ '\')">Reset to Default</button>'
+  +'<button class="btn btn-ghost btn-sm" onclick="previewEmailTemplate(\'' +sel+ '\')" style="margin-left:auto">Preview</button>'
+  +'</div>';
+}
+
+async function saveEmailTemplate(key){
+  const subject=(document.getElementById('et-subject')?.value||'').trim();
+  const body=(document.getElementById('et-body')?.value||'').trim();
+  if(!subject||!body){toast('Subject and body are required');return;}
+  const updates={};
+  updates[key]={subject,body};
+  await fbUpd('email_templates',updates);
+  toast('Template saved: '+key+' ✓');
+}
+
+async function resetEmailTemplate(key){
+  if(!confirm('Reset to default template?')) return;
+  const updates={};
+  updates[key]=DEFAULT_EMAIL_TEMPLATES[key];
+  await fbUpd('email_templates',updates);
+  toast('Reset to default ✓');
+}
+
+function previewEmailTemplate(key){
+  const subject=(document.getElementById('et-subject')?.value||'');
+  const body=(document.getElementById('et-body')?.value||'');
+  const sampleVars={
+    name:'Janvi Davda', task:'Statutory Audit 2024-25', dept:'Audit',
+    due:fmtDate(today()), priority:'High', client:'ABC Pvt Ltd',
+    approver:'Rushabh Shah', date:fmtDate(today()),
+    due_today:'• Statutory Audit (High)\n• GST Filing May 2025',
+    overdue:'• MSME Return (3 days)', total:'12',
+    completed:'3', time:'6h 30m', in_progress:'5',
+  };
+  const firm=getActiveFirm()?.name||'R B Shah & Associates';
+  let prevSubject=subject;
+  let prevBody=body;
+  Object.entries({...sampleVars,firm}).forEach(([k,v])=>{
+    const re=new RegExp('{{'+k+'}}','g');
+    prevSubject=prevSubject.replace(re,v);
+    prevBody=prevBody.replace(re,v);
+  });
+  const win=window.open('','_blank','width=600,height=500');
+  if(!win){toast('Allow popups to preview');return;}
+  win.document.write('<html><head><title>Email Preview</title>'
+    +'<style>body{font-family:Arial,sans-serif;padding:20px;max-width:560px;margin:0 auto}'
+    +'.subject{background:#1a3557;color:#fff;padding:10px 16px;border-radius:4px 4px 0 0;font-weight:600}'
+    +'.body{background:#f8f9fa;padding:16px;border:1px solid #ddd;border-radius:0 0 4px 4px;white-space:pre-line}'
+    +'</style></head><body>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:8px">Preview with sample data</div>'
+    +'<div class="subject">'+prevSubject+'</div>'
+    +'<div class="body">'+prevBody+'</div>'
+    +'</body></html>');
+  win.document.close();
 }
 
 // ═══════════════════════════════════════
@@ -7794,6 +7934,7 @@ function modalHTML(){
     settRecurring:()=>settRecurringHTML(),settTemplates:()=>settTemplatesHTML(),newRecurring:()=>recurringFormHTML(),editRecurring:()=>recurringFormHTML(RECURRING.find(r=>r.id===data.id)),
     settFirms:()=>settFirmsHTML(),newFirm:()=>firmFormHTML(),editFirm:()=>firmFormHTML(FIRMS.find(f=>f.id===data.id)),
     settEmailJS:()=>settEmailJSHTML(),
+    settEmailTemplates:()=>settEmailTemplatesHTML(),
     settCAFirms:()=>settCAFirmsHTML(),newCAFirm:()=>caFirmFormHTML(),editCAFirm:()=>caFirmFormHTML(CA_FIRMS.find(f=>f.id===data.id)),
     editCert:()=>editCertHTML(data),
     newCert:()=>newCertHTML(data),

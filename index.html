@@ -911,10 +911,19 @@ async function saveAdminSettings(){
 
 async function saveGasEmailConfig(){
   var url=(document.getElementById('gas-url')?.value||'').trim();
-  if(!url){toast('Enter URL');return;}
-  await fbUpd('emailjs_config',{gasUrl:url,gasKey:(document.getElementById('gas-key')?.value||'').trim(),replyTo:(document.getElementById('gas-reply')?.value||'').trim()});
+  if(!url){toast('Enter the Apps Script URL');return;}
+  var gasKey=(document.getElementById('gas-key')?.value||'').trim();
+  var replyTo=(document.getElementById('gas-reply')?.value||'').trim();
+  var existing=EMAILJS_CFG||{};
+  await db.ref('emailjs_config').set({
+    gasUrl:url,gasKey:gasKey,replyTo:replyTo,
+    serviceId:existing.serviceId||'',templateId:existing.templateId||'',
+    digestTemplateId:existing.digestTemplateId||'',
+    publicKey:existing.publicKey||'',enabled:existing.enabled||false
+  });
   toast('Gmail config saved');
 }
+
 async function testGasEmail(){
   var url=(document.getElementById('gas-url')?.value||EMAILJS_CFG?.gasUrl||'').trim();
   var key=(document.getElementById('gas-key')?.value||EMAILJS_CFG?.gasKey||'').trim();
@@ -4022,6 +4031,228 @@ function previewEmailTemplate(key){
     +'</body></html>');
   win.document.close();
 }
+
+// ═══════════════════════════════════════
+//  EMAIL RULES ENGINE
+// ═══════════════════════════════════════
+var FIRM_EMAIL='taxation@rbshah.co.in';
+
+function taskEmailBody(task,intro,extra){
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+
+  // Company (client)
+  var client=getClient(task.clientId);
+  var clientName=client?.name||'—';
+
+  // Department
+  var dept=getDept(task.deptId)?.name||'—';
+  var sdept=getSD(task.subDeptId)?.name||'';
+
+  // Assignees
+  var assigneeIds=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
+  var assigneeNames=assigneeIds.map(function(id){return getUser(id)?.name||id;}).filter(Boolean).join(', ')||'—';
+
+  // Manager(s) for this dept
+  var mgrs=USERS.filter(function(u){
+    if(u.role!=='manager'&&u.role!=='superadmin') return false;
+    var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
+    return d.includes(task.deptId);
+  }).map(function(u){return u.name;}).join(', ')||'—';
+
+  // Time logged
+  var totalSecs=(task.seconds||TIME_ENTRIES.filter(function(e){return e.taskId===task.id;}).reduce(function(a,e){return a+(e.seconds||0);},0));
+  var timeLogged=totalSecs>0?fmtSec(totalSecs):'Not logged';
+
+  // UDIN details
+  var cert=getCert(task);
+  var udinLine='';
+  if(cert&&cert.udin&&validateUDIN(cert.udin)){
+    udinLine='UDIN:       '+cert.udin+(cert.certNo?' | Cert No: '+cert.certNo:'')+(cert.signingMember?' | Signed by: '+cert.signingMember:'');
+  } else if(requiresUDIN(task.deptId,task.subDeptId)){
+    udinLine='UDIN:       Pending';
+  }
+
+  // Build email body
+  var sep='─'.repeat(40);
+  var parts=[
+    intro,
+    '',
+    sep,
+    'TASK DETAILS',
+    sep,
+    'Task Name:  '+( task.title||'—'),
+    'Company:    '+clientName,
+    'Department: '+dept+(sdept?' / '+sdept:''),
+    'Assignees:  '+assigneeNames,
+    'Manager:    '+mgrs,
+    'Due Date:   '+(task.dueDate?fmtDate(task.dueDate):'—'),
+    'Status:     '+(task.status||'—'),
+    'Priority:   '+(task.priority||'—'),
+    'Time Logged: '+timeLogged,
+  ];
+  if(udinLine) parts.push(udinLine);
+  if(extra&&extra.length){
+    parts.push('');
+    parts=parts.concat(extra);
+  }
+  parts=parts.concat([sep,'','Regards,',firm]);
+  return parts.join('\n');
+}
+
+
+async function sendToUsers(ids,subject,body){
+  var seen=new Set();
+  for(var id of (ids||[])){if(!id||seen.has(id))continue;seen.add(id);var u=getUser(id);if(u&&u.email)await sendEmail(u.email,subject,body);}
+}
+
+function deptManagers(deptId){return USERS.filter(function(u){if(u.role!=='manager'&&u.role!=='superadmin')return false;var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(deptId);});}
+function allAdmins(){return USERS.filter(function(u){return u.role==='superadmin';});}
+
+// Rule 1: Task closed
+async function emailOnTaskClose(task){
+  if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
+  var subject='Task Completed: '+task.title;
+  var body=taskEmailBody(task,'This task has been completed.',['For any discrepancy please contact '+FIRM_EMAIL]);
+  var client=getClient(task.clientId);
+  if(client?.email)await sendEmail(client.email,subject,body);
+  var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
+  var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
+  var admins=allAdmins().map(function(u){return u.id;});
+  await sendToUsers([...assignees,...mgrs,...admins],subject,body);
+}
+
+// Rules 2+3: Assignee changed
+async function emailOnAssigneeChange(task,added,removed){
+  if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
+  for(var rid of (removed||[])){var u=getUser(rid);if(!u?.email)continue;await sendEmail(u.email,'Removed from task: '+task.title,taskEmailBody(task,'You have been removed as an assignee from this task.'));}
+  for(var aid of (added||[])){var u2=getUser(aid);if(!u2?.email)continue;await sendEmail(u2.email,'Assigned to task: '+task.title,taskEmailBody(task,'You have been assigned to this task.',['Log in to TaskHub to view details.']));}
+}
+
+// Rule 4: Due date changed
+async function emailOnDueDateChange(task,oldDate,newDate){
+  if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
+  var subject='Due Date Changed: '+task.title;
+  var body=taskEmailBody(task,'The due date for this task has been changed.',['Previous: '+(oldDate?fmtDate(oldDate):'—'),'New Date: '+(newDate?fmtDate(newDate):'—')]);
+  var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
+  var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
+  var admins=allAdmins().map(function(u){return u.id;});
+  await sendToUsers([...assignees,...mgrs,...admins],subject,body);
+}
+
+// Rule 5: Task created
+async function emailOnTaskCreate(task){
+  if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
+  var subject='New Task: '+task.title;
+  var body=taskEmailBody(task,'A new task has been assigned to you.',['Log in to TaskHub to view details.']);
+  var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
+  var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
+  await sendToUsers([...assignees,...mgrs],subject,body);
+}
+
+// Scheduled emails checker - piggybacked into checkReminders
+var _origCR=typeof checkReminders==='function'?checkReminders:function(){};
+function checkReminders(){_origCR();checkScheduledEmails();}
+
+function checkScheduledEmails(){
+  if(!currentUser||(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled))return;
+  var now=new Date();
+  var hhmm=now.toTimeString().slice(0,5);
+  var dateStr=now.toISOString().slice(0,10);
+  var day=now.getDay();
+  var slotKey=dateStr+'-'+hhmm;
+  if(window._lastEmailSlot===slotKey)return;
+  if(hhmm==='09:30'){window._lastEmailSlot=slotKey;sendMorningDigest(dateStr);}
+  if(hhmm==='20:00'){window._lastEmailSlot=slotKey;sendEveningDigest(dateStr);}
+  if(hhmm==='09:00'&&day===1){window._lastEmailSlot=slotKey;sendWeeklySummary(dateStr);}
+}
+
+// Rules 6,8,9: Morning digest
+async function sendMorningDigest(ds){
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+  var todayStr=ds||today();
+  function isActiveToday(t){if(isTaskTerminal(t))return false;if(t.dueDate===todayStr)return true;if(t.startDate&&t.dueDate&&todayStr>=t.startDate&&todayStr<=t.dueDate)return true;return false;}
+  var active=TASKS.filter(isActiveToday);
+  // Rule 6: personal
+  USERS.forEach(async function(u){
+    if(!u.email||u.active===false)return;
+    var mt=active.filter(function(t){return isAssignedTo(t,u.id);});
+    if(!mt.length)return;
+    var body=['Good morning '+u.name+',','','Your tasks for today:',''];
+    mt.forEach(function(t){body.push('* '+t.title+' ('+t.status+')'+(t.dueDate===todayStr?' - DUE TODAY':''));});
+    body=body.concat(['','Have a productive day!',firm]);
+    await sendEmail(u.email,'Your Tasks for Today - '+fmtDate(todayStr),body.join('\n'));
+  });
+  // Rule 8: dept summary to manager
+  DEPTS.forEach(async function(dept){
+    var mgrs=deptManagers(dept.id);if(!mgrs.length)return;
+    var dt=active.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;
+    var body=['Good morning,','','Active tasks in '+dept.name+' today ('+dt.length+'):',''];
+    dt.forEach(function(t){var an=(Array.isArray(t.assignees)?t.assignees:(t.assigneeId?[t.assigneeId]:[])).map(function(id){return getUser(id)?.name||'';}).join(', ');body.push('* '+t.title+' | '+an+' | '+t.status);});
+    body.push('\n'+firm);
+    mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Morning Summary - '+fmtDate(todayStr),body.join('\n'));});
+  });
+  // Rule 9: full company to admin
+  var admins=allAdmins();if(!admins.length||!active.length)return;
+  var body=['Good morning,','','Company active tasks today ('+active.length+'):',''];
+  DEPTS.forEach(function(dept){var dt=active.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;body.push('\n-- '+dept.name.toUpperCase()+' --');dt.forEach(function(t){body.push('* '+t.title+' ('+t.status+')');});});
+  body.push('\n'+firm);
+  admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Morning Task Summary - '+fmtDate(todayStr),body.join('\n'));});
+}
+
+// Rules 7,10,11: Evening digest
+async function sendEveningDigest(ds){
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+  var todayStr=ds||today();
+  var entries=TIME_ENTRIES.filter(function(e){return e.date===todayStr;});
+  // Rule 7: personal
+  USERS.forEach(async function(u){
+    if(!u.email||u.active===false)return;
+    var ue=entries.filter(function(e){return e.userId===u.id;});
+    if(!ue.length)return;
+    var secs=ue.reduce(function(a,e){return a+(e.seconds||0);},0);
+    var completed=TASKS.filter(function(t){return isAssignedTo(t,u.id)&&isTaskTerminal(t)&&(t.completedAt||'').slice(0,10)===todayStr;}).length;
+    var body=['Good evening '+u.name+',','','Your work summary for today:','','Time Logged: '+fmtSec(secs),'Tasks Completed: '+completed,'','Time Entries:'];
+    ue.forEach(function(e){var t=TASKS.find(function(tk){return tk.id===e.taskId;});body.push('* '+(t?.title||e.taskId)+': '+fmtSec(e.seconds||0)+(e.notes?' - '+e.notes:''));});
+    body.push('\n'+firm);
+    await sendEmail(u.email,'Your Daily Report - '+fmtDate(todayStr),body.join('\n'));
+  });
+  // Rule 10: dept to manager
+  DEPTS.forEach(async function(dept){
+    var mgrs=deptManagers(dept.id);if(!mgrs.length)return;
+    var du=USERS.filter(function(u){var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(dept.id);});
+    var de=entries.filter(function(e){return du.some(function(u){return u.id===e.userId;});});
+    if(!de.length)return;
+    var body=['Good evening,','','Reporting summary for '+dept.name+':',''];
+    du.forEach(function(u){var ue=de.filter(function(e){return e.userId===u.id;});if(!ue.length)return;var s=ue.reduce(function(a,e){return a+(e.seconds||0);},0);body.push(u.name+': '+fmtSec(s));ue.forEach(function(e){var t=TASKS.find(function(tk){return tk.id===e.taskId;});body.push('  * '+(t?.title||'')+(e.notes?' - '+e.notes:''));});});
+    body.push('\n'+firm);
+    mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Daily Report - '+fmtDate(todayStr),body.join('\n'));});
+  });
+  // Rule 11: company to admin
+  var admins=allAdmins();if(!admins.length||!entries.length)return;
+  var total=entries.reduce(function(a,e){return a+(e.seconds||0);},0);
+  var body=['Good evening,','','Company daily report - '+fmtDate(todayStr)+':','Total: '+fmtSec(total),''];
+  DEPTS.forEach(function(dept){var du=USERS.filter(function(u){var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(dept.id);});var de=entries.filter(function(e){return du.some(function(u){return u.id===e.userId;});});if(!de.length)return;var s=de.reduce(function(a,e){return a+(e.seconds||0);},0);body.push('-- '+dept.name+': '+fmtSec(s));du.forEach(function(u){var ue=de.filter(function(e){return e.userId===u.id;});if(!ue.length)return;var us=ue.reduce(function(a,e){return a+(e.seconds||0);},0);body.push(u.name+': '+fmtSec(us));});body.push('');});
+  body.push(firm);
+  admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Daily Report - '+fmtDate(todayStr),body.join('\n'));});
+}
+
+// Rule 12: Weekly summary (Monday 9am)
+async function sendWeeklySummary(ds){
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+  var we=new Date(ds+'T00:00:00');we.setDate(we.getDate()+7);var weStr=we.toISOString().slice(0,10);
+  var wt=TASKS.filter(function(t){return !isTaskTerminal(t)&&t.dueDate&&t.dueDate>=ds&&t.dueDate<=weStr;});
+  // Individual
+  USERS.forEach(async function(u){if(!u.email||u.active===false)return;var mt=wt.filter(function(t){return isAssignedTo(t,u.id);});if(!mt.length)return;var body=['Hi '+u.name+',','','Tasks due this week:',''];mt.sort(function(a,b){return (a.dueDate||'').localeCompare(b.dueDate||'');});mt.forEach(function(t){body.push('* '+t.title+' - '+fmtDate(t.dueDate)+' ('+t.status+')');});body.push('\n'+firm);await sendEmail(u.email,'Your Weekly Tasks - w/c '+fmtDate(ds),body.join('\n'));});
+  // Dept manager
+  DEPTS.forEach(async function(dept){var mgrs=deptManagers(dept.id);if(!mgrs.length)return;var dt=wt.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;var body=['Good morning,','','Tasks due this week in '+dept.name+' ('+dt.length+'):',''];dt.sort(function(a,b){return (a.dueDate||'').localeCompare(b.dueDate||'');});dt.forEach(function(t){var an=(Array.isArray(t.assignees)?t.assignees:(t.assigneeId?[t.assigneeId]:[])).map(function(id){return getUser(id)?.name||'';}).join(', ');body.push('* '+t.title+' - '+an+' - '+fmtDate(t.dueDate));});body.push('\n'+firm);mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Weekly Summary - w/c '+fmtDate(ds),body.join('\n'));});});
+  // Admin
+  var admins=allAdmins();if(!admins.length||!wt.length)return;
+  var body=['Good morning,','','All tasks due this week ('+wt.length+'):',''];
+  DEPTS.forEach(function(dept){var dt=wt.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;body.push('\n-- '+dept.name.toUpperCase()+' --');dt.sort(function(a,b){return (a.dueDate||'').localeCompare(b.dueDate||'');});dt.forEach(function(t){var an=(Array.isArray(t.assignees)?t.assignees:(t.assigneeId?[t.assigneeId]:[])).map(function(id){return getUser(id)?.name||'';}).join(', ');body.push('* '+t.title+' - '+an+' - '+fmtDate(t.dueDate));});});
+  body.push('\n'+firm);
+  admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Weekly Summary - w/c '+fmtDate(ds),body.join('\n'));});
+}
+
 
 // ═══════════════════════════════════════
 //  BIND ALL
@@ -8434,6 +8665,7 @@ async function createTask(){
     }
   });
   logChange(t.id,'created','Task created by '+currentUser.name);
+  emailOnTaskCreate(t).catch(function(){});
   // Create certificate if requested
   const createCertCb=document.getElementById('f-create-cert');
   if(createCertCb?.checked){
@@ -8701,32 +8933,9 @@ async function saveTaskStatus(id){
     pushNotif(uid2,'status_changed','🔄 Status updated: '+newStatus,t.title,id);
     showDesktopNotif('🔄 '+t.title,'Status: '+newStatus,id);
   });
-  // Email notification on task close
+  // Email notification on task close (Rules 1+)
   if(isTerminal){
-    const client=getClient(t.clientId);
-    asgns2.forEach(uid2=>{
-      const u2=getUser(uid2);
-      if(u2?.email){
-        const body2=[
-          'Hi '+u2.name+',',
-          '',
-          'A task you are assigned to has been completed:',
-          '',
-          'Task: '+t.title,
-          client?'Client: '+client.name:'',
-          'Closed by: '+currentUser.name,
-          'Date: '+fmtDate(today()),
-          t.seconds?'Time logged: '+fmtSec(t.seconds):'',
-        ].filter(Boolean).join('\n');
-        sendEmail(u2.email,'✅ Task Closed: '+t.title,body2,t.title,u2.name,today());
-      }
-    });
-    // Also notify creator if different
-    if(t.createdBy && t.createdBy!==currentUser.id && !asgns2.includes(t.createdBy)){
-      const creator=getUser(t.createdBy);
-      if(creator?.email) sendEmail(creator.email,'✅ Task Closed: '+t.title,
-        'Task "'+t.title+'" has been completed by '+currentUser.name+'.',t.title,creator.name,today());
-    }
+    emailOnTaskClose({...t, status:newStatus}).catch(function(){});
   }
   toast('Status saved ✓');
 }
@@ -8769,6 +8978,7 @@ async function saveTaskDates(id){
   logChange(id,'dates_changed',(newStart?'Start: '+newStart+' ':'')+'Due: '+newDue+(dueDateChanging?' (change #'+((t.dueDateChanges||0)+1)+')':''));
   await resetApprovalIfNeeded(id,'date change');
   toast('Dates saved ✓');
+  if(newDue&&newDue!==t.dueDate) emailOnDueDateChange(t,t.dueDate,newDue).catch(function(){});
 }
 async function saveTaskAssignees(id){
   const t=TASKS.find(x=>x.id===id);if(!t)return;
@@ -8784,6 +8994,10 @@ async function saveTaskAssignees(id){
     showDesktopNotif('📋 '+t.title,'Assigned to you',id);
   });
   logChange(id,'reassigned','Assignees updated');toast('Assignees saved ✓');
+  var _oa2=t.assignees?[...t.assignees]:(t.assigneeId?[t.assigneeId]:[]);
+  var _added2=newAssignees.filter(function(id){return !_oa2.includes(id);});
+  var _removed2=_oa2.filter(function(id){return !_newA.includes(id);});
+  if(_added2.length||_removed2.length) emailOnAssigneeChange(t,_added2,_removed2).catch(function(){});
 }
 async function saveTaskUDINOverride(id){
   const val=document.getElementById('edit-udin-override')?.checked;

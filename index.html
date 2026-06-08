@@ -600,7 +600,7 @@ const SD_TIME_ENTRIES=[
   {id:'te3',taskId:'t2',userId:'u8',date:'2025-04-01',seconds:5400,note:''},
   {id:'te4',taskId:'t3',userId:'u9',date:'2025-04-02',seconds:3600,note:'Client data'},
 ];
-const SD_EMAILJS={serviceId:'',templateId:'',digestTemplateId:'',publicKey:'',enabled:false};
+const SD_EMAILJS={serviceId:'',templateId:'',digestTemplateId:'',publicKey:'',enabled:false,gasUrl:'',gasKey:'',replyTo:''};
 
 // CA Firms — separate from billing firms, specifically for certificates/UDIN
 const SD_CA_FIRMS=[
@@ -890,7 +890,36 @@ async function saveAdminSettings(){
   await fbSet('admin_settings',settings);closeModal();toast('Settings saved \u2713');
 }
 
-function settEmailJSHTML(){const c=EMAILJS_CFG||{};const notifLog2=LS.get('notifLog',[]);return`${mHdr('Email Notifications (EmailJS)')}<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Configure EmailJS to receive notifications for task assignments, approvals, and daily digests.</div><div class="form-row"><label class="form-label">Public Key</label><input class="form-input" id="ej-pk" value="${c.publicKey||''}"/></div><div class="form-row"><label class="form-label">Service ID</label><input class="form-input" id="ej-svc" value="${c.serviceId||''}"/></div><div class="form-row"><label class="form-label">Template ID</label><input class="form-input" id="ej-tmpl" value="${c.templateId||''}"/></div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="btn btn-primary" style="flex:1" onclick="saveEmailJS()">Save</button><button class="btn btn-ghost btn-sm" onclick="testEmailJS()">Test</button></div><div class="section-label">Recent (${notifLog2.length})</div>${notifLog2.length?`<div style="max-height:120px;overflow-y:auto">${[...notifLog2].reverse().slice(0,10).map(n=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span>${n.subject||'Notification'} \u2192 ${n.to}</span><span style="color:${n.sent?'var(--accent)':'var(--red)'}">${n.sent?'\u2713':'\u2715'}</span></div>`).join('')}</div>`:`<div style="font-size:12px;color:var(--text3)">No notifications sent yet</div>`}`}
+async function saveGasEmailConfig(){
+  var url=(document.getElementById('gas-url')?.value||'').trim();
+  if(!url){toast('Enter URL');return;}
+  await fbUpd('emailjs_config',{gasUrl:url,gasKey:(document.getElementById('gas-key')?.value||'').trim(),replyTo:(document.getElementById('gas-reply')?.value||'').trim()});
+  toast('Gmail config saved');
+}
+async function testGasEmail(){
+  var url=(document.getElementById('gas-url')?.value||EMAILJS_CFG?.gasUrl||'').trim();
+  var key=(document.getElementById('gas-key')?.value||EMAILJS_CFG?.gasKey||'').trim();
+  if(!url){toast('Enter the Apps Script URL first');return;}
+  if(!currentUser.email){toast('Your account has no email set');return;}
+  toast('Sending test email to '+currentUser.email+'...');
+  try{
+    var p=new URLSearchParams({to:currentUser.email,subject:'TaskHub Test Email '+new Date().toLocaleTimeString('en-IN'),body:'TaskHub Gmail relay is working correctly!',fromName:getActiveFirm()?.name||'R B Shah & Associates',key:key});
+    var resp=await fetch(url,{method:'POST',body:p});
+    var txt=await resp.text();
+    var res={success:resp.ok};
+    try{res=JSON.parse(txt);}catch(_){}
+    if(res.success){toast('Test sent to '+currentUser.email+' — check inbox!');}
+    else{toast('Send failed: '+(res.error||txt.slice(0,80)));}
+  }catch(e){
+    if(e.message.includes('Failed to fetch')||e.message.includes('CORS')){
+      toast('Connection blocked. In your Apps Script: Deploy > Web App > Who has access = Anyone');
+    } else {
+      toast('Error: '+e.message);
+    }
+  }
+}
+
+function settEmailJSHTML(){const c=EMAILJS_CFG||{};const notifLog2=LS.get('notifLog',[]);return`${mHdr('Email Config')}<div style='background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:12px;overflow:hidden'><div style='background:var(--bg3);padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600'>Gmail Relay ${EMAILJS_CFG?.gasUrl?'<span style=\'color:var(--green,#4ade80)\'>Active</span>':'<span style=\'color:var(--text3)\'>Not set</span>'}</div><div style='padding:12px'><div class='form-row'><label class='form-label'>Apps Script URL</label><input class='form-input' id='gas-url' value='${EMAILJS_CFG?.gasUrl||''}' placeholder='https://script.google.com/macros/s/.../exec' style='font-size:11px'/></div><div class='g2'><div class='form-row'><label class='form-label'>Secret Key</label><input class='form-input' type='password' id='gas-key' value='${EMAILJS_CFG?.gasKey||''}' placeholder='Your secret key' autocomplete='new-password'/></div><div class='form-row'><label class='form-label'>Reply-To</label><input class='form-input' id='gas-reply' value='${EMAILJS_CFG?.replyTo||''}' placeholder='info@rbshah.co.in'/></div></div><div style='display:flex;gap:8px;margin-top:8px'><button class='btn btn-primary btn-sm' onclick='saveGasEmailConfig()'>Save Gmail</button><button class='btn btn-ghost btn-sm' onclick='testGasEmail()'>Test Email</button></div></div></div><div style='font-size:12px;font-weight:600;color:var(--text3);margin-bottom:8px'>EmailJS (Fallback)</div>${mHdr('Email Notifications (EmailJS)')}<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Configure EmailJS to receive notifications for task assignments, approvals, and daily digests.</div><div class="form-row"><label class="form-label">Public Key</label><input class="form-input" id="ej-pk" value="${c.publicKey||''}"/></div><div class="form-row"><label class="form-label">Service ID</label><input class="form-input" id="ej-svc" value="${c.serviceId||''}"/></div><div class="form-row"><label class="form-label">Template ID</label><input class="form-input" id="ej-tmpl" value="${c.templateId||''}"/></div><div style="display:flex;gap:8px;margin-bottom:14px"><button class="btn btn-primary" style="flex:1" onclick="saveEmailJS()">Save</button><button class="btn btn-ghost btn-sm" onclick="testEmailJS()">Test</button></div><div class="section-label">Recent (${notifLog2.length})</div>${notifLog2.length?`<div style="max-height:120px;overflow-y:auto">${[...notifLog2].reverse().slice(0,10).map(n=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span>${n.subject||'Notification'} \u2192 ${n.to}</span><span style="color:${n.sent?'var(--accent)':'var(--red)'}">${n.sent?'\u2713':'\u2715'}</span></div>`).join('')}</div>`:`<div style="font-size:12px;color:var(--text3)">No notifications sent yet</div>`}`}
 
 async function saveEmailJS(){const publicKey=document.getElementById('ej-pk')?.value?.trim(),serviceId=document.getElementById('ej-svc')?.value?.trim(),templateId=document.getElementById('ej-tmpl')?.value?.trim();const cfg={publicKey,serviceId,templateId,digestTemplateId:templateId,enabled:!!(publicKey&&serviceId&&templateId)};await fbSet('emailjs_config',cfg);initEmailJS();closeModal();toast(cfg.enabled?'EmailJS enabled \u2713':'Config saved')}
 
@@ -4526,25 +4555,34 @@ function initEmailJS(){
   }
 }
 
-async function sendEmail(to,subject,body,taskTitle='',assigneeName='',dueDate=''){
-  if(!EMAILJS_CFG?.enabled||!EMAILJS_CFG?.serviceId||!EMAILJS_CFG?.templateId||!EMAILJS_CFG?.publicKey){
-    console.log('[EmailJS] Not configured — skipping notification');
-    return false;
+async function sendEmail(to,subject,body,taskTitle,assigneeName,dueDate){
+  taskTitle=taskTitle||'';assigneeName=assigneeName||'';dueDate=dueDate||'';
+  if(!to||!to.includes('@')) return false;
+  var cfg=EMAILJS_CFG||{};
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+  if(cfg.gasUrl){
+    try{
+      var p=new URLSearchParams({to:to,subject:subject,body:body,fromName:firm,replyTo:cfg.replyTo||'',key:cfg.gasKey||''});
+      if(taskTitle) p.append('taskTitle',taskTitle);
+      if(dueDate) p.append('dueDate',dueDate);
+      var resp=await fetch(cfg.gasUrl,{method:'POST',body:p});
+      var txt=await resp.text();
+      var res={success:resp.ok};
+      try{res=JSON.parse(txt);}catch(_){}
+      if(res.success){logNotif({to,subject,sent:true,ts:Date.now(),provider:'gmail'});return true;}
+      throw new Error(res.error||'GAS error');
+    }catch(ge){logNotif({to,subject,sent:false,ts:Date.now(),provider:'gmail',error:String(ge)});}
   }
-  if(typeof emailjs==='undefined'){console.log('[EmailJS] SDK not loaded');return false}
-  try{
-    await emailjs.send(EMAILJS_CFG.serviceId,EMAILJS_CFG.templateId,{
-      to_email:to,to_name:assigneeName,subject,message:body,task_title:taskTitle,
-      due_date:dueDate,firm_name:getActiveFirm()?.name||'R B Shah & Associates'
-    });
-    logNotif({to,subject,sent:true,ts:Date.now()});
-    return true;
-  }catch(e){
-    console.error('[EmailJS] Send failed:',e);
-    logNotif({to,subject,sent:false,ts:Date.now(),error:e?.text||'Failed'});
-    return false;
+  if(cfg.enabled&&cfg.serviceId&&cfg.templateId&&cfg.publicKey){
+    if(typeof emailjs==='undefined') return false;
+    try{
+      await emailjs.send(cfg.serviceId,cfg.templateId,{to_email:to,to_name:assigneeName,subject,message:body,task_title:taskTitle,due_date:dueDate,firm_name:firm});
+      logNotif({to,subject,sent:true,ts:Date.now(),provider:'emailjs'});return true;
+    }catch(e){logNotif({to,subject,sent:false,ts:Date.now(),provider:'emailjs',error:String(e)});return false;}
   }
+  return false;
 }
+
 
 async function sendDigestEmail(to,name,tasks){
   if(!EMAILJS_CFG?.enabled||!EMAILJS_CFG?.digestTemplateId)return false;
@@ -4981,7 +5019,29 @@ async function doEmailLogin(){
       // They must use "Forgot Password" to set up their account via email
       loginError='First-time login: click "Forgot password?" below to activate your account and set a password.';
     } else if(e.code==='auth/wrong-password'){
-      loginError='Incorrect password. If admin reset your password, click "Forgot password?" to set a new one.';
+      // Check if admin set a pending password reset
+      try{
+        var snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+        var udata=snap.val()?Object.values(snap.val())[0]:null;
+        if(udata&&udata.pendingPasswordReset){
+          // Try signing in with the new password
+          try{
+            cred=await auth.signInWithEmailAndPassword(realEmail,udata.pendingPasswordReset);
+            await fbUpd('users/'+udata.id,{pendingPasswordReset:null});
+            toast('✓ Password updated. Use this new password from now on.');
+            // Don't return - fall through to complete login
+          }catch(newPwErr){
+            loginError='Incorrect password. Contact admin to reset your password.';
+            loginLoading=false;renderLogin();return;
+          }
+        } else {
+          loginError='Incorrect password. Ask your admin to reset it in Settings → Users → Edit.';
+          loginLoading=false;renderLogin();return;
+        }
+      }catch(_){
+        loginError='Incorrect password.';
+        loginLoading=false;renderLogin();return;
+      }
     } else if(e.code==='auth/invalid-email'){
       loginError='Invalid email address.';
     } else if(e.code==='auth/too-many-requests'){
@@ -8833,10 +8893,10 @@ function editUserHTML({id}){
   </div>`;
 }
 async function updateUser(id){
-  const newPassVal=(document.getElementById('uf-new-password')?.value||'').trim();
-  const deptCbs=[...document.querySelectorAll('.uf-dept-cb:checked')].map(el=>el.value);
-  const firstDept=deptCbs[0]||null;
-  const updates={
+  var newPassVal=(document.getElementById('uf-new-password')?.value||'').trim();
+  var deptCbs=[...document.querySelectorAll('.uf-dept-cb:checked')].map(function(el){return el.value;});
+  var firstDept=deptCbs[0]||null;
+  var updates={
     name: document.getElementById('uf-name')?.value?.trim(),
     email: document.getElementById('uf-email')?.value?.trim()||'',
     username: (document.getElementById('uf-username')?.value||'').trim().toLowerCase(),
@@ -8850,29 +8910,50 @@ async function updateUser(id){
   };
   if(!updates.name){toast('Name required');return;}
   await fbUpd('users/'+id, updates);
-  // Handle password change
+
   if(newPassVal){
     if(newPassVal.length<6){toast('Password must be at least 6 characters');return;}
-    // Store pending reset — applied when user logs in next (we have fresh auth then)
-    await fbUpd('users/'+id,{pendingPasswordReset:newPassVal});
-    const targetUser=USERS.find(u=>u.id===id);
-    const targetEmail=targetUser?.email||'';
-    // Also send Firebase reset email so user can self-activate if needed
-    if(targetEmail){
-      try {
-        await auth.sendPasswordResetEmail(targetEmail);
-        toast('✓ Password saved + reset email sent to '+targetEmail);
-      } catch(_){
-        toast('✓ Password saved for '+targetEmail+' — apply on next login');
+    var targetEmail=updates.email||(USERS.find(function(u){return u.id===id;})?.email||'');
+    if(!targetEmail){toast('User has no email — cannot set password');return;}
+
+    // Strategy: use a SECONDARY Firebase app instance so admin stays logged in
+    // This creates/overwrites the Firebase Auth account for the target user
+    var secondaryApp=null;
+    try{
+      // Create a temporary secondary Firebase app
+      secondaryApp=firebase.initializeApp(firebase.app().options,'secondary_'+Date.now());
+      var secondaryAuth=secondaryApp.auth();
+      try{
+        // Try creating new account first
+        await secondaryAuth.createUserWithEmailAndPassword(targetEmail, newPassVal);
+        await secondaryAuth.signOut();
+        await fbUpd('users/'+id,{pendingPasswordReset:null});
+        toast('Password set for '+targetEmail+' ✓ — they can login now');
+      }catch(createErr){
+        if(createErr.code==='auth/email-already-in-use'){
+          // Account exists — sign in with old password won't work without knowing it
+          // Store as pending reset - will apply on their next login attempt
+          await fbUpd('users/'+id,{pendingPasswordReset:newPassVal});
+          toast('Password queued for '+targetEmail+' — applies on their next login');
+        } else {
+          await fbUpd('users/'+id,{pendingPasswordReset:newPassVal});
+          toast('Password saved — will apply on next login ('+createErr.code+')');
+        }
+        if(secondaryAuth) await secondaryAuth.signOut().catch(function(){});
       }
-    } else {
-      toast('✓ Password saved — will apply on next login');
+    }catch(initErr){
+      // Secondary app init failed (firebase SDK version issue) - fall back to pending
+      await fbUpd('users/'+id,{pendingPasswordReset:newPassVal});
+      toast('Password saved for '+targetEmail+' — user must login once to activate');
+    }finally{
+      if(secondaryApp) try{secondaryApp.delete();}catch(_){}
     }
   } else {
     toast('User updated ✓');
   }
   closeModal();
 }
+
 async function delUser(id){if(USERS.filter(u=>u.role==='superadmin').length<=1&&USERS.find(u=>u.id===id)?.role==='superadmin'){toast('Cannot delete last super admin');return}await fbDel('users/'+id);closeModal();toast('Deleted')}
 
 // ── Firm Masters ──
@@ -9143,4 +9224,4 @@ setTimeout(function(){
 </script>
 
 </body>
-</htmldata-gkey="\'+gKey+\'">\'>
+</html>

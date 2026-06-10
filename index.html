@@ -448,6 +448,25 @@ body{font-size:var(--base-font)}
 
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <link rel="manifest" href="data:application/json;charset=utf-8,{
+    &quot;name&quot;: &quot;TaskHub by RB&quot;,
+    &quot;short_name&quot;: &quot;TaskHub&quot;,
+    &quot;description&quot;: &quot;R B Shah Office Management&quot;,
+    &quot;start_url&quot;: &quot;./&quot;,
+    &quot;display&quot;: &quot;standalone&quot;,
+    &quot;background_color&quot;: &quot;%231a1f2e&quot;,
+    &quot;theme_color&quot;: &quot;%231a3557&quot;,
+    &quot;orientation&quot;: &quot;portrait-primary&quot;,
+    &quot;icons&quot;: [
+      {&quot;src&quot;: &quot;https://rbshah.co.in/rbs-icon-192.png&quot;, &quot;sizes&quot;: &quot;192x192&quot;, &quot;type&quot;: &quot;image/png&quot;},
+      {&quot;src&quot;: &quot;https://rbshah.co.in/rbs-icon-512.png&quot;, &quot;sizes&quot;: &quot;512x512&quot;, &quot;type&quot;: &quot;image/png&quot;}
+    ]
+  }"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="TaskHub RB"/>
+  <meta name="theme-color" content="#1a3557"/>
 </head>
 <body>
 <div id="app"><div class="splash"><img id="splash-logo" style="height:60px;width:auto;object-fit:contain;margin-bottom:10px"/><div class="splash-logo">TaskHub <span class="app-sub">by RB</span></div><div class="spinner"></div><div style="font-size:12px;color:var(--text3)">Connecting…</div></div></div>
@@ -4101,9 +4120,18 @@ function taskEmailBody(task,intro,extra){
 
 
 async function sendToUsers(ids,subject,body){
+  // Collect active emails only, then send as BCC
+  var emails=[];
   var seen=new Set();
-  for(var id of (ids||[])){if(!id||seen.has(id))continue;seen.add(id);var u=getUser(id);if(u&&u.email)await sendEmail(u.email,subject,body);}
+  for(var id of (ids||[])){
+    if(!id||seen.has(id))continue;
+    seen.add(id);
+    var u=getUser(id);
+    if(u&&u.active!==false&&u.email&&u.email.includes('@')) emails.push(u.email);
+  }
+  if(emails.length) await sendEmailBCC(emails,subject,body);
 }
+
 
 function deptManagers(deptId){return USERS.filter(function(u){if(u.role!=='manager'&&u.role!=='superadmin')return false;var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(deptId);});}
 function allAdmins(){return USERS.filter(function(u){return u.role==='superadmin';});}
@@ -4112,46 +4140,81 @@ function allAdmins(){return USERS.filter(function(u){return u.role==='superadmin
 async function emailOnTaskClose(task){
   if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
   var subject='Task Completed: '+task.title;
-  var body=taskEmailBody(task,'This task has been completed.',['For any discrepancy please contact '+FIRM_EMAIL]);
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+
+  // Build client-friendly body (no internal details)
+  var clientBody=taskEmailBody(task,
+    'We are pleased to inform you that the following task has been completed successfully.',
+    ['For any discrepancy or query, please contact us at '+FIRM_EMAIL,
+     'We appreciate your continued trust in '+firm+'.']
+  );
+
+  // Build internal body (full details)
+  var internalBody=taskEmailBody(task,
+    'Task has been completed and closed.',
+    ['Closed by: '+currentUser.name]
+  );
+
+  // Send to client (client-friendly version, active check via email existence)
   var client=getClient(task.clientId);
-  if(client?.email)await sendEmail(client.email,subject,body);
+  if(client&&client.email&&client.email.includes('@')){
+    await sendEmailBCC([client.email], subject, clientBody);
+  }
+
+  // Collect internal recipients (active users only)
   var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
   var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
   var admins=allAdmins().map(function(u){return u.id;});
-  await sendToUsers([...assignees,...mgrs,...admins],subject,body);
+  var allIds=[...new Set([...assignees,...mgrs,...admins])];
+  var activeEmails=allIds.map(function(id){var u=getUser(id);return (u&&u.active!==false&&u.email)?u.email:null;}).filter(Boolean);
+  if(activeEmails.length) await sendEmailBCC(activeEmails, subject, internalBody);
 }
+
 
 // Rules 2+3: Assignee changed
 async function emailOnAssigneeChange(task,added,removed){
   if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
-  for(var rid of (removed||[])){var u=getUser(rid);if(!u?.email)continue;await sendEmail(u.email,'Removed from task: '+task.title,taskEmailBody(task,'You have been removed as an assignee from this task.'));}
-  for(var aid of (added||[])){var u2=getUser(aid);if(!u2?.email)continue;await sendEmail(u2.email,'Assigned to task: '+task.title,taskEmailBody(task,'You have been assigned to this task.',['Log in to TaskHub to view details.']));}
+  // Removed assignees
+  var removedEmails=(removed||[]).map(function(id){var u=getUser(id);return(u&&u.active!==false&&u.email)?u.email:null;}).filter(Boolean);
+  if(removedEmails.length) await sendEmailBCC(removedEmails,'Removed from task: '+task.title,taskEmailBody(task,'You have been removed as an assignee from this task.'));
+  // Added assignees
+  var addedEmails=(added||[]).map(function(id){var u=getUser(id);return(u&&u.active!==false&&u.email)?u.email:null;}).filter(Boolean);
+  if(addedEmails.length) await sendEmailBCC(addedEmails,'Assigned to task: '+task.title,taskEmailBody(task,'You have been assigned to this task.',['Log in to TaskHub to view full details.']));
 }
+
 
 // Rule 4: Due date changed
 async function emailOnDueDateChange(task,oldDate,newDate){
   if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
   var subject='Due Date Changed: '+task.title;
-  var body=taskEmailBody(task,'The due date for this task has been changed.',['Previous: '+(oldDate?fmtDate(oldDate):'—'),'New Date: '+(newDate?fmtDate(newDate):'—')]);
+  var body=taskEmailBody(task,'The due date for this task has been changed.',['Previous Due Date: '+(oldDate?fmtDate(oldDate):'—'),'New Due Date:      '+(newDate?fmtDate(newDate):'—')]);
   var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
   var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
   var admins=allAdmins().map(function(u){return u.id;});
-  await sendToUsers([...assignees,...mgrs,...admins],subject,body);
+  var allIds=[...new Set([...assignees,...mgrs,...admins])];
+  var emails=allIds.map(function(id){var u=getUser(id);return(u&&u.active!==false&&u.email)?u.email:null;}).filter(Boolean);
+  if(emails.length) await sendEmailBCC(emails,subject,body);
 }
+
 
 // Rule 5: Task created
 async function emailOnTaskCreate(task){
   if(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled)return;
-  var subject='New Task: '+task.title;
-  var body=taskEmailBody(task,'A new task has been assigned to you.',['Log in to TaskHub to view details.']);
+  var subject='New Task Assigned: '+task.title;
+  var body=taskEmailBody(task,'A new task has been assigned. Please review the details below.',['Log in to TaskHub to start working on this task.']);
   var assignees=Array.isArray(task.assignees)?task.assignees:(task.assigneeId?[task.assigneeId]:[]);
   var mgrs=deptManagers(task.deptId).map(function(u){return u.id;});
-  await sendToUsers([...assignees,...mgrs],subject,body);
+  var allIds=[...new Set([...assignees,...mgrs])];
+  var emails=allIds.map(function(id){var u=getUser(id);return(u&&u.active!==false&&u.email)?u.email:null;}).filter(Boolean);
+  if(emails.length) await sendEmailBCC(emails,subject,body);
 }
 
+
 // Scheduled emails checker - piggybacked into checkReminders
-var _origCR=typeof checkReminders==='function'?checkReminders:function(){};
-function checkReminders(){_origCR();checkScheduledEmails();}
+// Scheduled email checker - runs every minute alongside checkReminders
+setInterval(function(){
+  try{checkScheduledEmails();}catch(e){}
+}, 60000);
 
 function checkScheduledEmails(){
   if(!currentUser||(!EMAILJS_CFG?.gasUrl&&!EMAILJS_CFG?.enabled))return;
@@ -4189,14 +4252,16 @@ async function sendMorningDigest(ds){
     var body=['Good morning,','','Active tasks in '+dept.name+' today ('+dt.length+'):',''];
     dt.forEach(function(t){var an=(Array.isArray(t.assignees)?t.assignees:(t.assigneeId?[t.assigneeId]:[])).map(function(id){return getUser(id)?.name||'';}).join(', ');body.push('* '+t.title+' | '+an+' | '+t.status);});
     body.push('\n'+firm);
-    mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Morning Summary - '+fmtDate(todayStr),body.join('\n'));});
+    var mgrEmails=mgrs.filter(function(m){return m.active!==false&&m.email;}).map(function(m){return m.email;});
+    if(mgrEmails.length)await sendEmailBCC(mgrEmails,'['+dept.name+'] Morning Summary - '+fmtDate(todayStr),body.join('\n'));
   });
   // Rule 9: full company to admin
   var admins=allAdmins();if(!admins.length||!active.length)return;
   var body=['Good morning,','','Company active tasks today ('+active.length+'):',''];
   DEPTS.forEach(function(dept){var dt=active.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;body.push('\n-- '+dept.name.toUpperCase()+' --');dt.forEach(function(t){body.push('* '+t.title+' ('+t.status+')');});});
   body.push('\n'+firm);
-  admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Morning Task Summary - '+fmtDate(todayStr),body.join('\n'));});
+  var adminEmails=admins.filter(function(a){return a.active!==false&&a.email;}).map(function(a){return a.email;});
+  if(adminEmails.length)await sendEmailBCC(adminEmails,'[Company] Morning Task Summary - '+fmtDate(todayStr),body.join('\n'));
 }
 
 // Rules 7,10,11: Evening digest
@@ -4953,6 +5018,83 @@ async function sendEmail(to,subject,body,taskTitle,assigneeName,dueDate){
   }
   return false;
 }
+async function sendEmailBCC(emails,subject,body){
+  if(!emails||!emails.length) return false;
+  var cfg=EMAILJS_CFG||{};
+  var firm=getActiveFirm()?.name||'R B Shah & Associates';
+  var logoUrl='https://rbshah.co.in/rbs-logo.png'; // RB logo URL
+  if(cfg.gasUrl){
+    try{
+      // Build HTML email with logo and styling
+      var htmlBody=buildHtmlEmail(subject,body,firm,logoUrl);
+      var p=new URLSearchParams({
+        to:emails[0],  // primary recipient
+        bcc:emails.slice(1).join(','), // rest as BCC
+        subject:subject,
+        body:body,
+        htmlBody:htmlBody,
+        fromName:firm,
+        replyTo:cfg.replyTo||FIRM_EMAIL||'',
+        key:cfg.gasKey||''
+      });
+      var resp=await fetch(cfg.gasUrl,{method:'POST',body:p});
+      var txt=await resp.text();
+      var res={success:resp.ok};try{res=JSON.parse(txt);}catch(_){}
+      if(res.success){logNotif({to:emails.join(','),subject,sent:true,ts:Date.now(),provider:'gmail'});return true;}
+      throw new Error(res.error||'GAS failed');
+    }catch(ge){logNotif({to:emails.join(','),subject,sent:false,ts:Date.now(),provider:'gmail',error:String(ge)});}
+  }
+  // Fallback: send individually via EmailJS
+  for(var em of emails) await sendEmail(em,subject,body);
+  return true;
+}
+
+function buildHtmlEmail(subject,textBody,firm,logoUrl){
+  var lines=textBody.split('\n');
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>';
+  html+='<body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif">';
+  html+='<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:24px 0">';
+  html+='<tr><td align="center">';
+  html+='<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">';
+  // Header with logo
+  html+='<tr><td style="background:linear-gradient(135deg,#1a3557 0%,#2563a8 100%);padding:24px 32px;text-align:center">';
+  html+='<img src="'+logoUrl+'" alt="R B Shah" style="height:50px;width:auto;margin-bottom:8px;display:block;margin:0 auto 8px" onerror="this.style.display=\'none\'">';
+  html+='<h1 style="color:#ffffff;margin:0;font-size:20px;font-weight:700;letter-spacing:0.5px">'+firm+'</h1>';
+  html+='<p style="color:rgba(255,255,255,0.8);margin:4px 0 0;font-size:13px">TaskHub Notification</p>';
+  html+='</td></tr>';
+  // Subject bar
+  html+='<tr><td style="background:#2563a8;padding:12px 32px">';
+  html+='<p style="color:#ffffff;margin:0;font-size:14px;font-weight:600">'+subject+'</p>';
+  html+='</td></tr>';
+  // Body
+  html+='<tr><td style="padding:24px 32px">';
+  var inDetails=false;
+  lines.forEach(function(line){
+    var sep=line.match(/^[─━-]{10,}$/);
+    if(sep&&!inDetails){inDetails=true;html+='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:16px;margin:16px 0">';return;}
+    if(sep&&inDetails){inDetails=false;html+='</div>';return;}
+    if(line==='TASK DETAILS'){html+='<h3 style="color:#1a3557;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:0 0 12px">'+line+'</h3>';return;}
+    if(line===''){html+=(inDetails?'':'<br>');return;}
+    if(line.match(/^[A-Za-z ]+:/)){
+      var colon=line.indexOf(':');
+      var lbl=line.slice(0,colon).trim();
+      var val=line.slice(colon+1).trim();
+      html+='<p style="margin:6px 0;font-size:13px"><span style="color:#64748b;font-weight:600;min-width:110px;display:inline-block">'+lbl+':</span> <span style="color:#1e293b">'+val+'</span></p>';
+    } else {
+      html+='<p style="margin:6px 0;font-size:13px;color:#374151">'+line+'</p>';
+    }
+  });
+  if(inDetails) html+='</div>';
+  html+='</td></tr>';
+  // Footer
+  html+='<tr><td style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;text-align:center">';
+  html+='<p style="margin:0;font-size:11px;color:#94a3b8">This is an automated notification from TaskHub by RB &bull; '+firm+'</p>';
+  html+='<p style="margin:4px 0 0;font-size:11px;color:#94a3b8">Please do not reply to this email. Contact us at <a href="mailto:'+FIRM_EMAIL+'" style="color:#2563a8">'+FIRM_EMAIL+'</a></p>';
+  html+='</td></tr>';
+  html+='</table></td></tr></table></body></html>';
+  return html;
+}
+
 
 
 async function sendDigestEmail(to,name,tasks){
@@ -8946,6 +9088,12 @@ async function saveTaskDates(id){
   const newStart=document.getElementById('edit-start')?.value||'';
   const dueDateChanging=newDue&&newDue!==t.dueDate;
 
+  // Block due date removal - due date is required once set
+  if(!newDue&&t.dueDate){
+    toast('Due date cannot be removed. Every task must have a due date.');
+    return;
+  }
+
   // Role check: employees cannot change dates
   if(currentUser.role==='employee'){toast('Only managers/admins can change dates');return;}
 
@@ -9578,5 +9726,48 @@ setTimeout(function(){
 
 </script>
 
+
+<script>
+if('serviceWorker' in navigator){
+  // Inline service worker as blob URL (no separate file needed)
+  var swCode=[
+    "const CACHE='taskhub-v10';",
+    "const ASSETS=['./',location.href];",
+    "self.addEventListener('install',function(e){",
+    "  e.waitUntil(caches.open(CACHE).then(function(c){return c.addAll(ASSETS).catch(function(){});}));",
+    "  self.skipWaiting();",
+    "});",
+    "self.addEventListener('activate',function(e){",
+    "  e.waitUntil(caches.keys().then(function(keys){return Promise.all(keys.filter(function(k){return k!==CACHE;}).map(function(k){return caches.delete(k);}));}));",
+    "  self.clients.claim();",
+    "});",
+    "self.addEventListener('fetch',function(e){",
+    "  if(e.request.method!=='GET')return;",
+    "  var url=e.request.url;",
+    "  // Always network-first for Firebase",
+    "  if(url.includes('firebaseio.com')||url.includes('firebase')||url.includes('googleapis.com'))return;",
+    "  e.respondWith(fetch(e.request).then(function(r){",
+    "    if(r.ok){var rc=r.clone();caches.open(CACHE).then(function(c){c.put(e.request,rc);});}",
+    "    return r;",
+    "  }).catch(function(){return caches.match(e.request);}));",
+    "});"
+  ].join('\n');
+  var blob=new Blob([swCode],{type:'application/javascript'});
+  var url=URL.createObjectURL(blob);
+  navigator.serviceWorker.register(url,{scope:'./'}).then(function(reg){
+    console.log('SW registered');
+    // Check for updates
+    reg.addEventListener('updatefound',function(){
+      var nw=reg.installing;
+      nw.addEventListener('statechange',function(){
+        if(nw.state==='installed'&&navigator.serviceWorker.controller){
+          // New version available
+          if(typeof toast==='function') toast('Update available — reload to get latest version');
+        }
+      });
+    });
+  }).catch(function(e){console.log('SW failed:',e);});
+}
+</script>
 </body>
 </html>

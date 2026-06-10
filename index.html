@@ -8474,10 +8474,7 @@ function settingsPage(){
   <div class="sett-item" onclick="openModal('settCAFirms',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">CA Firms (Certificate Register)</div><div style="font-size:11px;color:var(--text3)">${CA_FIRMS.length} firm${CA_FIRMS.length!==1?'s':''} · certificate number schemes</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   `:''}
   <div class="section-label">About</div>
-  <div class="card" style="font-size:12px;color:var(--text3)"><div style="margin-bottom:4px"><strong style="color:var(--text2)">TaskFlow v9</strong></div><div>User picker · Bulk actions · Checklists · Leave portal · Reports<div class='tab-attachments' style='margin-top:16px;border-top:1px solid var(--border);padding-top:12px'>
-  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
-  ${attachmentListHTML(id)}
-</div></div></div>`;
+  <div class="card" style="font-size:12px;color:var(--text3)"><div style="margin-bottom:4px"><strong style="color:var(--text2)">TaskFlow v9</strong></div><div>User picker · Bulk actions · Checklists · Leave portal · Reports</div></div>`;
 }
 
 // ═══════════════════════════════════════
@@ -9176,7 +9173,42 @@ function taskDetailHTML(data){
   ${checklist.length?`<div style="margin-bottom:12px">${checklist.map((item,i)=>{
     const canToggle=isAdminOrMgr||item.addedBy===currentUser.id||isAssignedTo(t,currentUser.id);
     return`<div class="checklist-item"><div class="check-box${item.done?' done':''}" onclick="${canToggle?`toggleChecklistItem('${id}','${item.id||i}')`:''}" style="${!canToggle?'cursor:default;opacity:.6':''}"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div><span class="check-text${item.done?' done':''}">${item.text}</span>${item.done&&item.doneBy?`<span style="font-size:10px;color:var(--text3)">${getUser(item.doneBy)?.name?.split(' ')[0]||''}</span>`:''} ${isAdminOrMgr||item.addedBy===currentUser.id?`<button onclick="removeChecklistItem('${id}',${i})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;line-height:1;padding:0;margin-left:auto">×</button>`:''}</div>`;
-  }).join('')}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">No checklist items.</div>`}>`;
+  }).join('')}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">No checklist items.</div>`}
+  </div>
+  <div class='modal-col-right'>
+    <div style='border-bottom:1px solid var(--border);margin-bottom:12px;padding-bottom:8px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px'>Activity Log & Time</div>
+    <div style='background:var(--bg3);border-radius:var(--r2);padding:10px;margin-bottom:12px;text-align:center'>
+      <div style='font-size:10px;color:var(--text3);margin-bottom:4px'>Total time logged</div>
+      <div class='${isRunning?"btv":""}' style='font-family:var(--mono);font-size:28px;font-weight:600;color:var(--accent)'>${fmtTimer(sec)}</div>
+      <div style='display:flex;gap:7px;justify-content:center;margin-top:9px'>
+        ${isRunning?`<button class='btn btn-danger btn-sm' onclick='stopTimer()'>⏹ Stop</button>`:`<button class='btn btn-primary btn-sm' onclick='startTimer(\'${id}\')'>▶ Start</button>`}
+        <button class='btn btn-ghost btn-sm' onclick='openModal(\'manualTime\',{taskId:\'${id}\'})'>+ Manual</button>
+      </div>
+    </div>
+    <div style='font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px'>Time Entries (${entries.length})</div>
+    <div style='max-height:250px;overflow-y:auto;margin-bottom:14px'>
+      ${entries.length?entries.map(e=>{
+        const eu=getUser(e.userId);
+        const canEdit=currentUser.role==='superadmin'||currentUser.role==='manager'||e.userId===currentUser.id;
+        return`<div style='display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:8px;font-size:11px;padding:6px 0;border-bottom:1px solid var(--border)'>
+          <span style='color:var(--text3)'>${e.date||''}</span>
+          <span style='color:var(--text2)'>${eu?shortName(eu.name):''} ${e.note?'· '+e.note:''}</span>
+          <span style='font-family:var(--mono);color:var(--accent);font-weight:600'>${fmtSec(e.seconds)}</span>
+          ${canEdit?`<button style='background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:1px 5px' onclick='openModal(\'editTime\',{entryId:\'${e.id}\'})'>✎</button>`:''}
+        </div>`}).join(''):`<div style='font-size:11px;color:var(--text3)'>No time logged yet</div>`}
+    </div>
+    <div style='font-size:11px;font-weight:600;color:var(--text3);margin-bottom:8px'>Comments (${taskComments.length})</div>
+    <div style='max-height:200px;overflow-y:auto;margin-bottom:10px'>
+      ${taskComments.length?taskComments.map(c=>{const cu=getUser(c.userId);return`<div class='comment-item'><div style='display:flex;align-items:center;gap:6px;margin-bottom:3px'><div class='avatar ${avClass(c.userId)}' style='width:20px;height:20px;font-size:8px'>${initials(cu?.name||'?')}</div><span style='font-size:11px;font-weight:600'>${cu?.name||''}</span><span style='font-size:10px;color:var(--text3)'>${new Date(c.ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div><div style='font-size:12px;padding-left:27px'>${c.text}</div></div>`;}).join(''):`<div style='font-size:12px;color:var(--text3)'>No comments yet</div>`}
+    </div>
+    <div style='display:flex;gap:7px'><input class='form-input' id='comment-input' placeholder='Add comment…' style='flex:1;font-size:12px' onkeydown="if(event.key==='Enter')addComment('${id}')"/><button class='btn btn-primary btn-sm' onclick='addComment(\'${id}\')'>Post</button></div>
+    <div style='margin-top:14px;border-top:1px solid var(--border);padding-top:10px'>
+      <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
+      ${attachmentListHTML(id)}
+    </div>
+  </div>
+</div>
+`;
 }
 
 async function toggleCertificate(taskId){

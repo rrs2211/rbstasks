@@ -8517,10 +8517,7 @@ function modalHTML(){
   };
   const fn=map[type];if(!fn)return'';
   const wideTypes=['taskDetail','dscDetail','clientDetail'];const isWide=wideTypes.includes(type);
-return`<div class="modal-overlay open" id="modal-overlay"><div class="modal${isWide?' modal-wide':''}">${fn()}<div class='tab-attachments' style='margin-top:16px;border-top:1px solid var(--border);padding-top:12px'>
-  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
-  ${attachmentListHTML(id)}
-</div></div></div>`;
+return`<div class="modal-overlay open" id="modal-overlay"><div class="modal${isWide?' modal-wide':''}">${fn()}</div></div>`;
 }
 function mHdr(t){return`<div class="modal-header"><div class="modal-title">${t}</div><button class="btn-icon" onclick="closeModal()"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`}
 
@@ -9034,7 +9031,9 @@ async function createTask(){
 }
 
 // ── Task Detail (with UDIN section) ──
-function taskDetailHTML({id}){
+function taskDetailHTML(data){
+  const id=data?.id||data;
+  if(!id) return mHdr('Error')+'<p style="padding:12px;color:red">Task ID missing. Please close and try again.</p>';
   const t=TASKS.find(x=>x.id===id);if(!t)return mHdr('Not found')+'<p style="padding:12px">Task not found.</p>';
   const dept=getDept(t.deptId),client=getClient(t.clientId);
   const assignees=taskAssignees(t);

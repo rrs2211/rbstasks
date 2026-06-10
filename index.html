@@ -149,6 +149,12 @@ body{background:var(--bg);color:var(--text);overflow-x:hidden;font-family:var(--
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
 .modal-overlay.open{opacity:1;pointer-events:all}
 .modal{background:var(--bg2);border:1px solid var(--border);border-top:2px solid var(--accent);border-radius:var(--r3) var(--r3) 0 0;padding:20px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;overflow-x:hidden;transform:translateY(24px);transition:transform .2s}
+.modal.modal-wide{max-width:1100px;}
+.modal.modal-wide .modal-cols{display:grid;grid-template-columns:1fr 1fr;gap:0;height:calc(90vh - 80px);}
+.modal.modal-wide .modal-col-left{overflow-y:auto;padding-right:16px;border-right:1px solid var(--border);}
+.modal.modal-wide .modal-col-right{overflow-y:auto;padding-left:16px;}
+@media(max-width:800px){.modal.modal-wide{max-width:100%;}.modal.modal-wide .modal-cols{grid-template-columns:1fr;height:auto;}}
+
 .modal-overlay.open .modal{transform:translateY(0)}
 .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .modal-title{font-size:16px;font-weight:600}
@@ -448,20 +454,32 @@ body{font-size:var(--base-font)}
 
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <link rel="manifest" href="data:application/json;charset=utf-8,{
-    &quot;name&quot;: &quot;TaskHub by RB&quot;,
-    &quot;short_name&quot;: &quot;TaskHub&quot;,
-    &quot;description&quot;: &quot;R B Shah Office Management&quot;,
-    &quot;start_url&quot;: &quot;./&quot;,
-    &quot;display&quot;: &quot;standalone&quot;,
-    &quot;background_color&quot;: &quot;%231a1f2e&quot;,
-    &quot;theme_color&quot;: &quot;%231a3557&quot;,
-    &quot;orientation&quot;: &quot;portrait-primary&quot;,
-    &quot;icons&quot;: [
-      {&quot;src&quot;: &quot;https://rbshah.co.in/rbs-icon-192.png&quot;, &quot;sizes&quot;: &quot;192x192&quot;, &quot;type&quot;: &quot;image/png&quot;},
-      {&quot;src&quot;: &quot;https://rbshah.co.in/rbs-icon-512.png&quot;, &quot;sizes&quot;: &quot;512x512&quot;, &quot;type&quot;: &quot;image/png&quot;}
-    ]
-  }"/>
+  <script>
+// Inject manifest as blob URL (works with PWA install prompt unlike data: URIs)
+(function(){
+  var mf={
+    "name":"TaskHub by RB",
+    "short_name":"TaskHub",
+    "description":"R B Shah Office Management",
+    "start_url":"./",
+    "display":"standalone",
+    "background_color":"#1a1f2e",
+    "theme_color":"#1a3557",
+    "orientation":"portrait-primary",
+    "icons":[
+      {"src":"https://rbshah.co.in/rbs-icon-192.png","sizes":"192x192","type":"image/png"},
+      {"src":"https://rbshah.co.in/rbs-icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+    ],
+    "categories":["productivity","business"],
+    "lang":"en"
+  };
+  var blob=new Blob([JSON.stringify(mf)],{type:'application/manifest+json'});
+  var url=URL.createObjectURL(blob);
+  var link=document.createElement('link');
+  link.rel='manifest';link.href=url;
+  document.head.appendChild(link);
+})();
+</script>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -668,6 +686,8 @@ let chatLoaded=false;
 let BATCH_LOGS=[];
 let DSC_RECORDS=[];
 let DSC_MOVEMENTS=[];
+let TASK_DEPS={};  // {taskId: {blockedBy:[...], blocks:[...]}}
+let R2_CFG=null; // {workerUrl, bucketName}
 let dscFilter={search:'',status:'all',expiryDays:'',tab:0};
 let dscExpiry=30;        // [{id,taskId,userId,date,qty,seconds,note}]
 let batchLogLoaded=false;
@@ -889,6 +909,11 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     if(s.val()) EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES,...s.val()};
     else EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES};
   });
+  db.ref('task_deps').on('value',s=>{
+    TASK_DEPS=s.val()||{};
+  });
+  db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
+  db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
   db.ref('dsc_records').on('value',s=>{
     DSC_RECORDS=objToArr(s.val()||{});
     if(!loaded.dsc){loaded.dsc=true;checkLoaded();}else render();
@@ -4318,6 +4343,171 @@ async function sendWeeklySummary(ds){
   admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Weekly Summary - w/c '+fmtDate(ds),body.join('\n'));});
 }
 
+
+
+// ─── Task Dependencies ────────────────────────────────────────────────────
+function getBlockers(taskId){
+  var dep=TASK_DEPS[taskId];
+  if(!dep||!dep.blockedBy) return [];
+  return dep.blockedBy.filter(function(bid){
+    var bt=TASKS.find(function(t){return t.id===bid;});
+    return bt&&!isTaskTerminal(bt);
+  });
+}
+function isTaskBlocked(taskId){
+  return getBlockers(taskId).length>0;
+}
+async function addDependency(taskId, blockedByTaskId){
+  if(taskId===blockedByTaskId){toast('A task cannot block itself');return;}
+  var dep=TASK_DEPS[taskId]||{blockedBy:[],blocks:[]};
+  var blocker=TASK_DEPS[blockedByTaskId]||{blockedBy:[],blocks:[]};
+  if(!dep.blockedBy.includes(blockedByTaskId)) dep.blockedBy.push(blockedByTaskId);
+  if(!blocker.blocks) blocker.blocks=[];
+  if(!blocker.blocks.includes(taskId)) blocker.blocks.push(taskId);
+  await db.ref('task_deps/'+taskId).set(dep);
+  await db.ref('task_deps/'+blockedByTaskId).set(blocker);
+  toast('Dependency added');
+  render();
+}
+async function removeDependency(taskId, blockedByTaskId){
+  var dep=TASK_DEPS[taskId]||{};
+  var blocker=TASK_DEPS[blockedByTaskId]||{};
+  dep.blockedBy=(dep.blockedBy||[]).filter(function(id){return id!==blockedByTaskId;});
+  blocker.blocks=(blocker.blocks||[]).filter(function(id){return id!==taskId;});
+  await db.ref('task_deps/'+taskId).set(dep);
+  await db.ref('task_deps/'+blockedByTaskId).set(blocker);
+  toast('Dependency removed');
+  render();
+}
+function depPickerHTML(taskId){
+  var dep=TASK_DEPS[taskId]||{};
+  var blockedBy=dep.blockedBy||[];
+  var otherTasks=TASKS.filter(function(t){return t.id!==taskId&&!isTaskTerminal(t);});
+  var q=(window._depSearch||'').toLowerCase();
+  var filtered=q?otherTasks.filter(function(t){return (t.title||'').toLowerCase().includes(q)||(getClient(t.clientId)?.name||'').toLowerCase().includes(q);}):otherTasks;
+  var html='<div style="margin-top:8px">';
+  // Existing blockers
+  if(blockedBy.length){
+    html+='<div style="font-size:11px;font-weight:600;color:var(--red);margin-bottom:6px">Blocked by:</div>';
+    blockedBy.forEach(function(bid){
+      var bt=TASKS.find(function(t){return t.id===bid;});
+      var done=bt&&isTaskTerminal(bt);
+      html+='<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px">';
+      html+='<span style="color:'+(done?'var(--green,#4ade80)':'var(--red)')+'">'+(done?'✓':'⏳')+'</span>';
+      html+='<span style="flex:1">'+(bt?bt.title:'Deleted task')+'</span>';
+      html+='<button class="btn btn-ghost btn-xs" style="color:var(--red)" onclick="removeDependency(\''+taskId+'\',\''+bid+'\')">&times;</button>';
+      html+='</div>';
+    });
+  }
+  // Add new dependency
+  html+='<div style="margin-top:8px"><input class="form-input" id="dep-search" placeholder="Search tasks to block this one…" value="'+(window._depSearch||'')+'" onfocus="document.body.dataset.lastSearchFocus=\'dep-search\'" oninput="window._depSearch=this.value;render()" style="font-size:11px"/></div>';
+  if(q&&filtered.length){
+    html+='<div style="max-height:120px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r);margin-top:4px">';
+    filtered.slice(0,8).forEach(function(t){
+      var alreadyLinked=blockedBy.includes(t.id);
+      html+='<div style="padding:5px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px" onclick="addDependency(\''+taskId+'\',\''+t.id+'\')">';
+      html+='<span style="color:var(--text3)">'+(getClient(t.clientId)?.name||'')+'</span>';
+      html+='<span>'+t.title+'</span>';
+      html+=(alreadyLinked?'<span style="color:var(--accent);margin-left:auto">✓ linked</span>':'<span style="color:var(--text3);margin-left:auto">+ block</span>');
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+
+// ─── Document Attachments (Cloudflare R2) ────────────────────────────────
+async function uploadAttachment(taskId, file){
+  if(!R2_CFG?.workerUrl){toast('R2 not configured. Set up in Admin Settings.');return;}
+  if(!file){toast('No file selected');return;}
+  const maxMB=25;
+  if(file.size>maxMB*1024*1024){toast('File too large (max '+maxMB+'MB)');return;}
+  toast('Uploading '+file.name+'…');
+  try{
+    // Get presigned URL from Cloudflare Worker
+    const key='tasks/'+taskId+'/'+Date.now()+'-'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+    const signResp=await fetch(R2_CFG.workerUrl+'/sign',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({key,contentType:file.type||'application/octet-stream',op:'put'})
+    });
+    const {url:uploadUrl}=await signResp.json();
+    // Upload directly to R2
+    const uploadResp=await fetch(uploadUrl,{method:'PUT',body:file,headers:{'Content-Type':file.type||'application/octet-stream'}});
+    if(!uploadResp.ok) throw new Error('Upload failed: '+uploadResp.status);
+    // Save metadata to Firebase
+    const attId=uid();
+    await fbSet('task_attachments/'+taskId+'/'+attId,{
+      id:attId, taskId, key, name:file.name, size:file.size,
+      type:file.type||'application/octet-stream',
+      uploadedBy:currentUser.id, uploadedAt:today(), ts:Date.now()
+    });
+    toast('✓ Uploaded: '+file.name);
+    render();
+  }catch(e){
+    toast('Upload failed: '+e.message);
+  }
+}
+
+async function getDownloadUrl(key){
+  if(!R2_CFG?.workerUrl) return null;
+  try{
+    const resp=await fetch(R2_CFG.workerUrl+'/sign',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({key,op:'get'})
+    });
+    const {url}=await resp.json();
+    return url;
+  }catch(e){return null;}
+}
+
+async function deleteAttachment(taskId, attId, key){
+  if(!confirm('Delete this attachment?')) return;
+  if(R2_CFG?.workerUrl){
+    try{
+      await fetch(R2_CFG.workerUrl+'/delete',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({key})
+      });
+    }catch(_){}
+  }
+  await fbDel('task_attachments/'+taskId+'/'+attId);
+  toast('Attachment deleted');
+  render();
+}
+
+function attachmentListHTML(taskId){
+  var atts=window._taskAttachments&&window._taskAttachments[taskId]?Object.values(window._taskAttachments[taskId]):[];
+  var html='<div style="margin-top:8px">';
+  if(atts.length){
+    atts.forEach(function(a){
+      var ext=(a.name||'').split('.').pop().toLowerCase();
+      var icon=ext==='pdf'?'📄':ext.match(/xlsx?|csv/)?'📊':ext.match(/docx?/)?'📝':ext.match(/jpe?g|png|gif/)?'🖼':'📎';
+      html+='<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">';
+      html+='<span>'+icon+'</span>';
+      html+='<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+a.name+'</span>';
+      html+='<span style="color:var(--text3)">'+formatFileSize(a.size)+'</span>';
+      html+='<button class="btn btn-ghost btn-xs" onclick="getDownloadUrl(\''+a.key+'\').then(function(url){if(url){var l=document.createElement(\'a\');l.href=url;l.download=\''+a.name+'\';l.click();}else toast(\'Cannot get download URL\')})">⬇</button>';
+      html+='<button class="btn btn-ghost btn-xs" style="color:var(--red)" onclick="deleteAttachment(\''+taskId+'\',\''+a.id+'\',\''+a.key+'\')">&times;</button>';
+      html+='</div>';
+    });
+  } else {
+    html+='<div style="font-size:11px;color:var(--text3)">No attachments yet</div>';
+  }
+  html+='<div style="margin-top:8px"><label class="btn btn-ghost btn-xs" style="cursor:pointer">';
+  html+='📎 Attach File <input type="file" style="display:none" onchange="uploadAttachment(\''+taskId+'\',this.files[0])"/>';
+  html+='</label></div>';
+  html+='</div>';
+  return html;
+}
+
+function formatFileSize(bytes){
+  if(!bytes) return '0B';
+  if(bytes<1024) return bytes+'B';
+  if(bytes<1024*1024) return (bytes/1024).toFixed(1)+'KB';
+  return (bytes/1024/1024).toFixed(1)+'MB';
+}
 
 // ═══════════════════════════════════════
 //  BIND ALL
@@ -8284,7 +8474,10 @@ function settingsPage(){
   <div class="sett-item" onclick="openModal('settCAFirms',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">CA Firms (Certificate Register)</div><div style="font-size:11px;color:var(--text3)">${CA_FIRMS.length} firm${CA_FIRMS.length!==1?'s':''} · certificate number schemes</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   `:''}
   <div class="section-label">About</div>
-  <div class="card" style="font-size:12px;color:var(--text3)"><div style="margin-bottom:4px"><strong style="color:var(--text2)">TaskFlow v9</strong></div><div>User picker · Bulk actions · Checklists · Leave portal · Reports</div></div>`;
+  <div class="card" style="font-size:12px;color:var(--text3)"><div style="margin-bottom:4px"><strong style="color:var(--text2)">TaskFlow v9</strong></div><div>User picker · Bulk actions · Checklists · Leave portal · Reports<div class='tab-attachments' style='margin-top:16px;border-top:1px solid var(--border);padding-top:12px'>
+  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
+  ${attachmentListHTML(id)}
+</div></div></div>`;
 }
 
 // ═══════════════════════════════════════
@@ -8323,7 +8516,11 @@ function modalHTML(){
     batchLog:()=>batchLogHTML(data),
   };
   const fn=map[type];if(!fn)return'';
-  return`<div class="modal-overlay open" id="modal-overlay"><div class="modal">${fn()}</div></div>`;
+  const wideTypes=['taskDetail','dscDetail','clientDetail'];const isWide=wideTypes.includes(type);
+return`<div class="modal-overlay open" id="modal-overlay"><div class="modal${isWide?' modal-wide':''}">${fn()}<div class='tab-attachments' style='margin-top:16px;border-top:1px solid var(--border);padding-top:12px'>
+  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
+  ${attachmentListHTML(id)}
+</div></div></div>`;
 }
 function mHdr(t){return`<div class="modal-header"><div class="modal-title">${t}</div><button class="btn-icon" onclick="closeModal()"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>`}
 
@@ -8853,8 +9050,9 @@ function taskDetailHTML({id}){
   const isAdminOrMgr=currentUser.role==='superadmin'||currentUser.role==='manager';
   const udinLocked=cert&&cert.udin&&validateUDIN(cert.udin)&&!isAdminOrMgr; // employees cannot edit tasks with valid UDIN
   const changeLog=Array.isArray(t.changeLog)?t.changeLog:[];
-
-  return `${mHdr(t.title)}
+  return `skHtmlId='td-'+id;
+  return `
+`${mHdr(t.title)}
   <!-- Status chips -->
   <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px">
     ${dept?`<span class="badge" style="background:${dept.color}22;color:${dept.color}">${dept.name}</span>`:''}
@@ -8864,11 +9062,14 @@ function taskDetailHTML({id}){
     ${approvalBadge(t)}
     ${t.private?`<span style="font-size:10px;background:var(--teal-bg);color:var(--teal);padding:2px 7px;border-radius:99px">🔒 Private</span>`:''}
     ${t.recurringId?`<span class="recur-chip">↻</span>`:''}
-    ${t.udinNotRequired?`<span style="font-size:10px;background:var(--amber-bg);color:var(--amber);padding:2px 7px;border-radius:99px">UDIN Waived</span>`:''}
+    ${t.udinNotRequired?`<span style="font-size:10px;background:var(--amber-bg);color:var(--amber);padding:2px 7px;border-radius:99px">UDIN Waived</span>`:''}<div class='modal-cols'><div class='modal-col-left'>
   </div>
 
   <!-- Timer -->
-  <div style="background:var(--bg3);border-radius:var(--r2);padding:12px;text-align:center;margin-bottom:12px">
+  
+  <div class='modal-cols'>
+    <div class='modal-col-left'>
+<div style="background:var(--bg3);border-radius:var(--r2);padding:12px;text-align:center;margin-bottom:12px">
     <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Total time logged</div>
     <div class="${isRunning?'btv':''}" style="font-family:var(--mono);font-size:28px;font-weight:600;color:var(--accent)">${fmtTimer(sec)}</div>
     <div style="display:flex;gap:7px;justify-content:center;margin-top:9px">
@@ -8985,10 +9186,19 @@ function taskDetailHTML({id}){
     const canToggle=isAdminOrMgr||item.addedBy===currentUser.id||isAssignedTo(t,currentUser.id);
     return`<div class="checklist-item"><div class="check-box${item.done?' done':''}" onclick="${canToggle?`toggleChecklistItem('${id}','${item.id||i}')`:''}" style="${!canToggle?'cursor:default;opacity:.6':''}"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div><span class="check-text${item.done?' done':''}">${item.text}</span>${item.done&&item.doneBy?`<span style="font-size:10px;color:var(--text3)">${getUser(item.doneBy)?.name?.split(' ')[0]||''}</span>`:''} ${isAdminOrMgr||item.addedBy===currentUser.id?`<button onclick="removeChecklistItem('${id}',${i})" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;line-height:1;padding:0;margin-left:auto">×</button>`:''}</div>`;
   }).join('')}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">No checklist items.</div>`}
+    </div>
+    <div class='modal-col-right'>
+    <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:12px">
+      <button class="btn" style="background:none;border:none;border-bottom:2px solid var(--accent);margin-bottom:-2px;font-size:12px;font-weight:600;color:var(--accent);padding:6px 12px">Activity & Time Log</button>
+    </div>
+<div style='background:var(--bg3);border-radius:var(--r2);padding:10px;margin-bottom:12px'><div style='font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:6px'>Dependencies</div>${isTaskBlocked(id)?'<div style="font-size:11px;background:rgba(239,68,68,.1);color:var(--red);padding:4px 8px;border-radius:var(--r);margin-bottom:6px">⛔ This task is blocked</div>':''}${depPickerHTML(id)}</div></div><div class='modal-col-right'><div style='display:flex;border-bottom:2px solid var(--border);margin-bottom:12px'>
+  <button class='btn' style='background:none;border:none;border-bottom:2px solid var(--accent);margin-bottom:-2px;font-size:11px;font-weight:600;color:var(--accent);padding:6px 10px'>Time Log</button>
+  <button class='btn' style='background:none;border:none;font-size:11px;color:var(--text3);padding:6px 10px' onclick='this.closest(".modal-col-right").querySelector(".tab-attachments").scrollIntoView({behavior:"smooth"})'>📎 Attachments</button>
+</div>
 
   <!-- Time log -->
   ${entries.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px">Time Entries (${entries.length})</div>
-  <div style="max-height:100px;overflow-y:auto;margin-bottom:12px">${entries.map(e=>{const eu=getUser(e.userId);const canEdit=currentUser.role==='superadmin'||currentUser.role==='manager'||e.userId===currentUser.id;return`<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;padding:4px 0;border-bottom:1px solid var(--border);gap:6px"><span style="color:var(--text3);flex:1">${eu?shortName(eu.name)+' · ':''} ${e.date}${e.note?' · '+e.note:''}</span><span style="font-family:var(--mono);color:var(--text2);flex-shrink:0">${fmtSec(e.seconds)}</span>${canEdit?`<button style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:1px 5px;border-radius:3px;flex-shrink:0" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text3)'" onclick="openModal('editTimeEntry',{entryId:'${e.id}'})">✎</button>`:''}`;}).join('')}</div>`:''}
+  <div style="max-height:300px;overflow-y:auto;margin-bottom:12px">${entries.map(e=>{const eu=getUser(e.userId);const canEdit=currentUser.role==='superadmin'||currentUser.role==='manager'||e.userId===currentUser.id;return`<div style="display:grid;grid-template-columns:auto auto 1fr auto auto;align-items:center;font-size:11px;padding:6px 0;border-bottom:1px solid var(--border);gap:8px"><span style="color:var(--text3);flex:1">${eu?shortName(eu.name)+' · ':''} ${e.date}${e.note?' · '+e.note:''}</span><span style="font-family:var(--mono);color:var(--text2);flex-shrink:0">${fmtSec(e.seconds)}</span>${canEdit?`<button style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:1px 5px;border-radius:3px;flex-shrink:0" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text3)'" onclick="openModal('editTimeEntry',{entryId:'${e.id}'})">✎</button>`:''}`;}).join('')}</div>`:''}
 
   <!-- Change Log -->
   ${changeLog.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px">Change Log (${changeLog.length})</div>
@@ -8998,7 +9208,13 @@ function taskDetailHTML({id}){
   <div style="font-size:13px;font-weight:600;margin-bottom:8px">Comments <span style="color:var(--text3);font-weight:400">${taskComments.length}</span></div>
   ${taskComments.length?`<div style="max-height:160px;overflow-y:auto;margin-bottom:10px">${taskComments.map(c=>{const a=getUser(c.userId);return`<div class="comment-item"><div style="display:flex;align-items:center;gap:7px;margin-bottom:3px"><div class="avatar ${avClass(c.userId)}" style="width:20px;height:20px;font-size:8px">${initials(a?.name)}</div><span style="font-size:11px;font-weight:600;color:var(--text2)">${a?.name||'—'}</span><span style="font-size:9px;color:var(--text3)">${new Date(c.ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div><div style="font-size:12px;padding-left:27px">${c.text}</div></div>`;}).join('')}</div>`:'<div style="font-size:12px;color:var(--text3);margin-bottom:10px">No comments yet</div>'}
   <div style="display:flex;gap:7px"><input class="form-input" id="comment-input" placeholder="Add comment…" style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter')addComment('${id}')"/><button class="btn btn-primary btn-sm" onclick="addComment('${id}')">Post</button></div>
-  `;
+  
+    </div>
+  </div>
+  <div class='tab-attachments' style='margin-top:16px;border-top:1px solid var(--border);padding-top:12px'>
+  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
+  ${attachmentListHTML(id)}
+</div></div></div>`;
 }
 
 async function toggleCertificate(taskId){
@@ -9041,7 +9257,18 @@ async function saveTaskDeptSD(id){
   logChange(id,'amended','Dept/Sub-dept updated');toast('Dept saved ✓');
 }
 async function saveTaskStatus(id){
-  const t=TASKS.find(x=>x.id===id);if(!t)return;
+  const t=TASKS.find(x=>x.id===id);
+  // Block if task has unresolved dependencies
+  const blockers=getBlockers(id);
+  if(blockers.length){
+    const sel=document.getElementById('status-select-'+id)?.value||'';
+    const termSt=taskStatuses(t);
+    if(termSt.includes(sel)){
+      const blockerNames=blockers.map(function(bid){var bt=TASKS.find(function(x){return x.id===bid;});return bt?bt.title:'Unknown';}).join(', ');
+      toast('⛔ Cannot close task. First complete: '+blockerNames);
+      return;
+    }
+  }if(!t)return;
   const newStatus=document.getElementById('edit-status')?.value;
   const newPriority=document.getElementById('edit-priority')?.value||t.priority;
   const sts=taskStatuses(t);const terminalSt=sts[sts.length-1];
@@ -9770,4 +9997,8 @@ if('serviceWorker' in navigator){
 }
 </script>
 </body>
-</html>
+</htmlfunction depBlockedBadge(t){
+  if(!isTaskBlocked(t.id)) return '';
+  return '<span style="font-size:9px;background:rgba(239,68,68,.15);color:var(--red);padding:1px 5px;border-radius:99px;font-weight:600">⛔ Blocked</span>';
+}
+>

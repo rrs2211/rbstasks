@@ -4420,47 +4420,41 @@ function depPickerHTML(taskId){
 
 // ─── Document Attachments (Cloudflare R2) ────────────────────────────────
 async function uploadAttachment(taskId, file){
-  if(!R2_CFG?.workerUrl){toast('R2 not configured. Set up in Admin Settings.');return;}
+  if(!R2_CFG?.workerUrl){toast('R2 not configured. Go to Settings \u2192 Cloudflare R2 Storage.');return;}
   if(!file){toast('No file selected');return;}
   const maxMB=25;
   if(file.size>maxMB*1024*1024){toast('File too large (max '+maxMB+'MB)');return;}
-  toast('Uploading '+file.name+'…');
+  toast('Uploading '+file.name+'\u2026');
   try{
-    // Get presigned URL from Cloudflare Worker
     const key='tasks/'+taskId+'/'+Date.now()+'-'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-    const signResp=await fetch(R2_CFG.workerUrl+'/sign',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({key,contentType:file.type||'application/octet-stream',op:'put'})
+    const secret=R2_CFG.secretKey||'';
+    // Upload directly through Worker proxy
+    const uploadResp=await fetch(R2_CFG.workerUrl+'/upload?key='+encodeURIComponent(key),{
+      method:'PUT',
+      headers:{'Content-Type':file.type||'application/octet-stream','X-Secret':secret},
+      body:file
     });
-    const {url:uploadUrl}=await signResp.json();
-    // Upload directly to R2
-    const uploadResp=await fetch(uploadUrl,{method:'PUT',body:file,headers:{'Content-Type':file.type||'application/octet-stream'}});
     if(!uploadResp.ok) throw new Error('Upload failed: '+uploadResp.status);
-    // Save metadata to Firebase
     const attId=uid();
     await fbSet('task_attachments/'+taskId+'/'+attId,{
-      id:attId, taskId, key, name:file.name, size:file.size,
+      id:attId,taskId,key,name:file.name,size:file.size,
       type:file.type||'application/octet-stream',
-      uploadedBy:currentUser.id, uploadedAt:today(), ts:Date.now()
+      uploadedBy:currentUser.id,uploadedAt:today(),ts:Date.now()
     });
-    toast('✓ Uploaded: '+file.name);
+    toast('\u2713 Uploaded: '+file.name);
     render();
   }catch(e){
     toast('Upload failed: '+e.message);
   }
 }
 
+
 async function getDownloadUrl(key){
   if(!R2_CFG?.workerUrl) return null;
-  try{
-    const resp=await fetch(R2_CFG.workerUrl+'/sign',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({key,op:'get'})
-    });
-    const {url}=await resp.json();
-    return url;
-  }catch(e){return null;}
+  // Return worker download URL directly
+  return R2_CFG.workerUrl+'/download?key='+encodeURIComponent(key);
 }
+
 
 async function deleteAttachment(taskId, attId, key){
   if(!confirm('Delete this attachment?')) return;
@@ -4507,6 +4501,63 @@ function formatFileSize(bytes){
   if(bytes<1024) return bytes+'B';
   if(bytes<1024*1024) return (bytes/1024).toFixed(1)+'KB';
   return (bytes/1024/1024).toFixed(1)+'MB';
+}
+
+
+function settR2HTML(){
+  const cfg=R2_CFG||{};
+  return mHdr('Cloudflare R2 Storage')
+  +'<div style="font-size:12px;color:var(--text3);margin-bottom:14px">Used for document attachments on tasks. Requires a Cloudflare Worker that signs upload/download URLs.</div>'
+  +'<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">'
+  +'<div style="background:var(--bg3);padding:9px 14px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px">Worker Configuration '
+  +(cfg.workerUrl?'<span style="font-size:10px;color:var(--green,#4ade80)">✓ Active</span>':'<span style="font-size:10px;color:var(--text3)">Not set</span>')
+  +'</div><div style="padding:14px">'
+  +'<div class="form-row"><label class="form-label">Worker URL</label>'
+  +'<input class="form-input" id="r2-worker-url" value="'+(cfg.workerUrl||'')+"\""
+  +' placeholder="https://your-worker.your-domain.workers.dev"/>'
+  +'<div style="font-size:10px;color:var(--text3);margin-top:3px">Deploy the TaskHub R2 Worker to Cloudflare and paste the URL here.</div></div>'
+  +'<div class="g2">'
+  +'<div class="form-row"><label class="form-label">Bucket Name</label>'
+  +'<input class="form-input" id="r2-bucket" value="'+(cfg.bucketName||'')+"\""
+  +' placeholder="taskhub-attachments"/></div>'
+  +'<div class="form-row"><label class="form-label">Secret Key</label>'
+  +'<input class="form-input" type="password" id="r2-secret" value="'+(cfg.secretKey||'')+"\""
+  +' placeholder="Worker secret key" autocomplete="new-password"/></div>'
+  +'</div>'
+  +'<div style="display:flex;gap:8px;margin-top:8px">'
+  +'<button class="btn btn-primary btn-sm" onclick="saveR2Config()">Save Config</button>'
+  +'<button class="btn btn-ghost btn-sm" onclick="testR2Config()">Test Connection</button>'
+  +'</div></div></div>'
+  +'<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:12px;margin-top:12px">'
+  +'<div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:8px">📋 Cloudflare Worker Setup</div>'
+  +'<ol style="font-size:11px;color:var(--text3);padding-left:16px;line-height:1.8">'
+  +'<li>Go to <a href="https://workers.cloudflare.com" target="_blank" style="color:var(--accent)">workers.cloudflare.com</a></li>'
+  +'<li>Create new Worker, paste the TaskHub R2 Worker code</li>'
+  +'<li>Add environment variables: R2_BUCKET (binding), SECRET_KEY</li>'
+  +'<li>Bind your R2 bucket to the Worker</li>'
+  +'<li>Deploy and paste the Worker URL above</li>'
+  +'</ol></div>';
+}
+async function saveR2Config(){
+  const workerUrl=(document.getElementById('r2-worker-url')?.value||'').trim();
+  if(!workerUrl){toast('Enter the Worker URL');return;}
+  await db.ref('r2_config').set({
+    workerUrl,
+    bucketName:(document.getElementById('r2-bucket')?.value||'').trim(),
+    secretKey:(document.getElementById('r2-secret')?.value||'').trim()
+  });
+  toast('R2 config saved ✓');
+}
+async function testR2Config(){
+  const url=(document.getElementById('r2-worker-url')?.value||R2_CFG?.workerUrl||'').trim();
+  if(!url){toast('Enter Worker URL first');return;}
+  toast('Testing connection...');
+  try{
+    const key=(document.getElementById('r2-secret')?.value||R2_CFG?.secretKey||'').trim();
+    const r=await fetch(url+'/health',{headers:{'X-Secret':key}});
+    if(r.ok){toast('✓ R2 Worker connected successfully!');}
+    else{toast('Worker responded with error: '+r.status);}
+  }catch(e){toast('Cannot reach Worker: '+e.message);}
 }
 
 // ═══════════════════════════════════════
@@ -6175,7 +6226,7 @@ function tasksPage(){
   <div class="tabs">${['All','Active','Approvals','UDIN','Certs','Done','Rejected','🔒 Private'].map((l,i)=>{
     const rejCnt=tasks.filter(t=>t.status==='Rejected'||t.approvalStatus==='rejected').length;
     const privCnt=tasks.filter(t=>t.private&&t.ownerId===currentUser.id).length;
-    const cnt=[tasks.length,tasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started').length,pendingAppr.length,udinNeeded.length,certTasks.length,tasks.filter(t=>isTaskTerminal(t)).length,rejCnt,privCnt][i];
+    const cnt=[(showClosedBilled?tasks.length:tasks.filter(t=>!isTaskTerminal(t)).length),tasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started').length,pendingAppr.length,udinNeeded.length,certTasks.length,tasks.filter(t=>isTaskTerminal(t)).length,rejCnt,privCnt][i];
     const col=i===2?'color:var(--amber)':i===3?'color:var(--purple)':i===4?'color:var(--blue)':i===6?'color:var(--red)':i===7?'color:var(--teal)':'';
     return`<div class="tab${curTab===i?' active':''}" data-tab="${i}" style="${col}">${l} <span style="color:var(--text3)">${cnt}</span></div>`;}).join('')}</div>
   ${sortBarHTML()}
@@ -6184,7 +6235,7 @@ function tasksPage(){
     const privateT=tasks.filter(t=>t.private&&t.ownerId===currentUser.id);
     const pubTasks=tasks.filter(t=>!t.private);
     const rejectedT=pubTasks.filter(t=>t.status==='Rejected'||t.approvalStatus==='rejected');
-    const tabMap=[pubTasks,pubTasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started'),pendingAppr,udinNeeded,certTasks,pubTasks.filter(t=>isTaskTerminal(t)&&showClosedBilled),rejectedT,privateT];
+    const tabMap=[(showClosedBilled?pubTasks:pubTasks.filter(t=>!isTaskTerminal(t))),pubTasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started'),pendingAppr,udinNeeded,certTasks,pubTasks.filter(t=>isTaskTerminal(t)&&showClosedBilled),rejectedT,privateT];
     // Approval tab uses custom card
     if(curTab===2&&(role==='superadmin'||role==='manager'))return`<div class="page-title mb-8">Approvals <span style="font-size:12px;color:var(--text3);font-weight:400">${pendingAppr.length} pending</span></div>${pendingAppr.length?pendingAppr.map(approvalCard).join(''):"<div style='text-align:center;padding:3rem;color:var(--text3)'>No pending approvals ✓</div>"}`;
     const ft=tabMap[curTab]||pubTasks;
@@ -8500,7 +8551,7 @@ function settingsPage(){
   <div class="sett-item" onclick="openModal('settClients',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Clients</div><div style="font-size:11px;color:var(--text3)">${CLIENTS.length} clients</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settRecurring',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Recurring Tasks</div><div style="font-size:11px;color:var(--text3)">${RECURRING.length} templates</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('whatsappConfig',{})"><div class="sett-icon" style="background:var(--teal-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">WhatsApp Notifications</div><div style="font-size:11px;color:${WHATSAPP_CFG?.enabled?'var(--accent)':'var(--text3)'}">via CallMeBot API</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
-  <div class="sett-item" onclick="openModal('settEmailJS',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Email Notifications (EmailJS)</div><div style="font-size:11px;color:${EMAILJS_CFG?.enabled?'var(--accent)':'var(--text3)'}">${EMAILJS_CFG?.enabled?'✓ Enabled':'Not configured'}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+  <div class="sett-item" onclick="openModal('settEmailJS',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div class="sett-item" onclick="openModal('settR2',{})"><div class="sett-icon" style="background:#f97316;opacity:.15;border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div class="sett-info"><div class="sett-title">Cloudflare R2 Storage</div><div class="sett-desc">${R2_CFG?.workerUrl?'✓ Configured':'Not configured'} · Document attachments</div></div></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Email Notifications (EmailJS)</div><div style="font-size:11px;color:${EMAILJS_CFG?.enabled?'var(--accent)':'var(--text3)'}">${EMAILJS_CFG?.enabled?'✓ Enabled':'Not configured'}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settCAFirms',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">CA Firms (Certificate Register)</div><div style="font-size:11px;color:var(--text3)">${CA_FIRMS.length} firm${CA_FIRMS.length!==1?'s':''} · certificate number schemes</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   `:''}
   <div class="section-label">About</div>
@@ -8527,6 +8578,7 @@ function modalHTML(){
     settRecurring:()=>settRecurringHTML(),settTemplates:()=>settTemplatesHTML(),newRecurring:()=>recurringFormHTML(),editRecurring:()=>recurringFormHTML(RECURRING.find(r=>r.id===data.id)),
     settFirms:()=>settFirmsHTML(),newFirm:()=>firmFormHTML(),editFirm:()=>firmFormHTML(FIRMS.find(f=>f.id===data.id)),
     settEmailJS:()=>settEmailJSHTML(),
+    settR2:()=>settR2HTML(),
     settEmailTemplates:()=>settEmailTemplatesHTML(),
     settCAFirms:()=>settCAFirmsHTML(),newCAFirm:()=>caFirmFormHTML(),editCAFirm:()=>caFirmFormHTML(CA_FIRMS.find(f=>f.id===data.id)),
     editCert:()=>editCertHTML(data),
@@ -9232,7 +9284,26 @@ function taskDetailHTML(data){
       ${taskComments.length?taskComments.map(c=>{const cu=getUser(c.userId);return`<div class='comment-item'><div style='display:flex;align-items:center;gap:6px;margin-bottom:3px'><div class='avatar ${avClass(c.userId)}' style='width:20px;height:20px;font-size:8px'>${initials(cu?.name||'?')}</div><span style='font-size:11px;font-weight:600'>${cu?.name||''}</span><span style='font-size:10px;color:var(--text3)'>${new Date(c.ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div><div style='font-size:12px;padding-left:27px'>${c.text}</div></div>`;}).join(''):`<div style='font-size:12px;color:var(--text3)'>No comments yet</div>`}
     </div>
     <div style='display:flex;gap:7px'><input class='form-input' id='comment-input' placeholder='Add comment…' style='flex:1;font-size:12px' onkeydown="if(event.key==='Enter')addComment('${id}')"/><button class='btn btn-primary btn-sm' onclick='addComment(\'${id}\')'>Post</button></div>
+  
     <div style='margin-top:14px;border-top:1px solid var(--border);padding-top:10px'>
+      <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>🕐 Change History</div>
+      <div style='max-height:280px;overflow-y:auto'>
+        ${changeLog.length?[...changeLog].reverse().map(entry=>{
+          const hu=getUser(entry.userId);
+          const ts=entry.ts?new Date(entry.ts).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+          const actionColor=entry.action==='created'?'var(--green,#4ade80)':entry.action==='status_change'?'var(--accent)':entry.action==='approved'?'var(--green,#4ade80)':entry.action==='rejected'?'var(--red)':'var(--text3)';
+          const icon=entry.action==='created'?'✚':entry.action==='status_change'?'⟳':entry.action==='approved'?'✓':entry.action==='rejected'?'✗':entry.action==='dates_changed'?'📅':entry.action==='assignees_changed'?'👤':entry.action==='deleted'?'🗑':'📝';
+          return `<div style='display:grid;grid-template-columns:20px 1fr;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px'>
+            <span style='color:${actionColor};text-align:center'>${icon}</span>
+            <div>
+              <div style='color:var(--text2)'>${entry.details||entry.action||''}</div>
+              <div style='color:var(--text3);font-size:10px;margin-top:1px'>${hu?.name||entry.userName||''} · ${ts}</div>
+            </div>
+          </div>`;
+        }).join(''):`<div style='color:var(--text3);font-size:11px'>No history yet</div>`}
+      </div>
+    </div>
+  <div style='margin-top:14px;border-top:1px solid var(--border);padding-top:10px'>
       <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>📎 Attachments</div>
       ${attachmentListHTML(id)}
     </div>

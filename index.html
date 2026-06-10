@@ -5718,9 +5718,39 @@ async function doEmailLogin(){
   } catch(e){
     loginLoading=false;
     if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'){
-      // User exists in DB but has no Firebase Auth account yet (old PIN-based user)
-      // They must use "Forgot Password" to set up their account via email
-      loginError='First-time login: click "Forgot password?" below to activate your account and set a password.';
+      // No Firebase Auth account yet — try to auto-create using pending password or entered password
+      try {
+        var usnap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+        var uval=usnap.val()?Object.values(usnap.val())[0]:null;
+        if(!uval){loginError='No account found for this email. Contact your admin.';renderLogin();return;}
+        // Use admin-set password if available, otherwise use entered password
+        var activatePass=uval.pendingPasswordReset||password;
+        try {
+          cred=await auth.createUserWithEmailAndPassword(realEmail, activatePass);
+          if(uval.pendingPasswordReset){
+            await fbUpd('users/'+uval.id,{pendingPasswordReset:null});
+            toast('\u2713 Account activated with your admin-set password.');
+          } else {
+            toast('\u2713 Account activated. Use this password to log in next time.');
+          }
+          // Fall through to complete login below
+        } catch(ce){
+          if(ce.code==='auth/email-already-in-use'){
+            // Account exists but signIn failed — try with pending password
+            if(uval.pendingPasswordReset){
+              try {
+                cred=await auth.signInWithEmailAndPassword(realEmail,uval.pendingPasswordReset);
+                await fbUpd('users/'+uval.id,{pendingPasswordReset:null});
+                toast('\u2713 Password updated by admin applied successfully.');
+              } catch(_){loginError='Incorrect password. Contact your admin to reset it.';renderLogin();return;}
+            } else {
+              loginError='Incorrect password.';renderLogin();return;
+            }
+          } else {
+            loginError='Could not activate account: '+ce.code;renderLogin();return;
+          }
+        }
+      } catch(qe){loginError='Login error: '+qe.message;renderLogin();return;}
     } else if(e.code==='auth/wrong-password'){
       // Check if admin set a pending password reset
       try{

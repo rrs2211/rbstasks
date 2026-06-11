@@ -909,6 +909,10 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     if(s.val()) EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES,...s.val()};
     else EMAIL_TEMPLATES={...DEFAULT_EMAIL_TEMPLATES};
   });
+  db.ref('notif_log').once('value',s=>{
+    if(s.val()) notifLog=s.val();
+    else notifLog=LS.get('notifLog',[]); // migrate from LS if exists
+  });
   db.ref('task_deps').on('value',s=>{
     TASK_DEPS=s.val()||{};
   });
@@ -4294,37 +4298,139 @@ async function sendEveningDigest(ds){
   var firm=getActiveFirm()?.name||'R B Shah & Associates';
   var todayStr=ds||today();
   var entries=TIME_ENTRIES.filter(function(e){return e.date===todayStr;});
-  // Rule 7: personal
+
+  // Rule 7: personal work summary to each user
   USERS.forEach(async function(u){
-    if(!u.email||u.active===false)return;
+    if(!u.email||u.active===false) return;
     var ue=entries.filter(function(e){return e.userId===u.id;});
-    if(!ue.length)return;
+    if(!ue.length) return;
     var secs=ue.reduce(function(a,e){return a+(e.seconds||0);},0);
     var completed=TASKS.filter(function(t){return isAssignedTo(t,u.id)&&isTaskTerminal(t)&&(t.completedAt||'').slice(0,10)===todayStr;}).length;
-    var body=['Good evening '+u.name+',','','Your work summary for today:','','Time Logged: '+fmtSec(secs),'Tasks Completed: '+completed,'','Time Entries:'];
-    ue.forEach(function(e){var t=TASKS.find(function(tk){return tk.id===e.taskId;});body.push('* '+(t?.title||e.taskId)+': '+fmtSec(e.seconds||0)+(e.notes?' - '+e.notes:''));});
-    body.push('\n'+firm);
-    await sendEmail(u.email,'Your Daily Report - '+fmtDate(todayStr),body.join('\n'));
+    var body=['Good evening '+u.name+',','','Your work summary for '+fmtDate(todayStr)+':','','Time Logged: '+fmtSec(secs),'Tasks Completed Today: '+completed,'','Time Log:'];
+    ue.forEach(function(e){
+      var t=TASKS.find(function(tk){return tk.id===e.taskId;});
+      var cl=getClient(t?.clientId);
+      body.push('  • '+(t?.title||e.taskId)+(cl?' ('+cl.name+')':'')+(e.notes?' – '+e.notes:'')+': '+fmtSec(e.seconds||0));
+    });
+    body.push('','Regards,',firm);
+    await sendEmail(u.email,'Your Daily Report – '+fmtDate(todayStr),body.join('\n'));
   });
-  // Rule 10: dept to manager
+
+  // Rule 10: dept reporting summary to manager
   DEPTS.forEach(async function(dept){
-    var mgrs=deptManagers(dept.id);if(!mgrs.length)return;
-    var du=USERS.filter(function(u){var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(dept.id);});
+    var mgrs=deptManagers(dept.id);
+    if(!mgrs.length) return;
+    var du=USERS.filter(function(u){
+      var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
+      return d.includes(dept.id);
+    });
     var de=entries.filter(function(e){return du.some(function(u){return u.id===e.userId;});});
-    if(!de.length)return;
-    var body=['Good evening,','','Reporting summary for '+dept.name+':',''];
-    du.forEach(function(u){var ue=de.filter(function(e){return e.userId===u.id;});if(!ue.length)return;var s=ue.reduce(function(a,e){return a+(e.seconds||0);},0);body.push(u.name+': '+fmtSec(s));ue.forEach(function(e){var t=TASKS.find(function(tk){return tk.id===e.taskId;});body.push('  * '+(t?.title||'')+(e.notes?' - '+e.notes:''));});});
-    body.push('\n'+firm);
-    mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Daily Report - '+fmtDate(todayStr),body.join('\n'));});
+    if(!de.length) return;
+    var deptTotal=de.reduce(function(a,e){return a+(e.seconds||0);},0);
+    var body=['Good evening,','','Daily Reporting – '+dept.name+' – '+fmtDate(todayStr),'Total: '+fmtSec(deptTotal),''];
+    du.forEach(function(u){
+      var ue=de.filter(function(e){return e.userId===u.id;});
+      if(!ue.length) return;
+      var us=ue.reduce(function(a,e){return a+(e.seconds||0);},0);
+      body.push(u.name+' – '+fmtSec(us));
+      ue.forEach(function(e){
+        var t=TASKS.find(function(tk){return tk.id===e.taskId;});
+        var cl=getClient(t?.clientId);
+        body.push('    • '+(t?.title||'')+(cl?' ('+cl.name+')':'')+(e.notes?' – '+e.notes:'')+': '+fmtSec(e.seconds||0));
+      });
+    });
+    body.push('','Regards,',firm);
+    mgrs.forEach(async function(m){if(m.email)await sendEmail(m.email,'['+dept.name+'] Daily Report – '+fmtDate(todayStr),body.join('\n'));});
   });
-  // Rule 11: company to admin
-  var admins=allAdmins();if(!admins.length||!entries.length)return;
+
+  // Rule 11: full company report to admin with task+company detail per person
+  var admins=allAdmins();
+  if(!admins.length||!entries.length) return;
   var total=entries.reduce(function(a,e){return a+(e.seconds||0);},0);
-  var body=['Good evening,','','Company daily report - '+fmtDate(todayStr)+':','Total: '+fmtSec(total),''];
-  DEPTS.forEach(function(dept){var du=USERS.filter(function(u){var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return d.includes(dept.id);});var de=entries.filter(function(e){return du.some(function(u){return u.id===e.userId;});});if(!de.length)return;var s=de.reduce(function(a,e){return a+(e.seconds||0);},0);body.push('-- '+dept.name+': '+fmtSec(s));du.forEach(function(u){var ue=de.filter(function(e){return e.userId===u.id;});if(!ue.length)return;var us=ue.reduce(function(a,e){return a+(e.seconds||0);},0);body.push(u.name+': '+fmtSec(us));});body.push('');});
-  body.push(firm);
-  admins.forEach(async function(a){if(a.email)await sendEmail(a.email,'[Company] Daily Report - '+fmtDate(todayStr),body.join('\n'));});
+
+  // Build HTML email with table
+  var htmlRows='';
+  var textBody=['Good evening,','','Company Daily Report – '+fmtDate(todayStr),'Total Time: '+fmtSec(total),''];
+
+  DEPTS.forEach(function(dept){
+    var du=USERS.filter(function(u){
+      var d=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
+      return d.includes(dept.id);
+    });
+    var de=entries.filter(function(e){return du.some(function(u){return u.id===e.userId;});});
+    if(!de.length) return;
+    var ds2=de.reduce(function(a,e){return a+(e.seconds||0);},0);
+
+    // Text version
+    textBody.push('── '+dept.name.toUpperCase()+' ── '+fmtSec(ds2));
+    du.forEach(function(u){
+      var ue=de.filter(function(e){return e.userId===u.id;});
+      if(!ue.length) return;
+      var us=ue.reduce(function(a,e){return a+(e.seconds||0);},0);
+      textBody.push('  '+u.name+': '+fmtSec(us));
+      ue.forEach(function(e){
+        var t=TASKS.find(function(tk){return tk.id===e.taskId;});
+        var cl=getClient(t?.clientId);
+        textBody.push('    • '+(t?.title||'–')+(cl?' ('+cl.name+')':'')+(e.notes?' – '+e.notes:'')+': '+fmtSec(e.seconds||0));
+      });
+    });
+    textBody.push('');
+
+    // HTML version – department section header
+    htmlRows += '<tr><td colspan="4" style="background:#1a3557;color:#fff;padding:8px 12px;font-weight:700;font-size:13px">'+dept.name+' &nbsp;<span style="font-weight:400;font-size:12px">'+fmtSec(ds2)+'</span></td></tr>';
+
+    du.forEach(function(u){
+      var ue=de.filter(function(e){return e.userId===u.id;});
+      if(!ue.length) return;
+      var us=ue.reduce(function(a,e){return a+(e.seconds||0);},0);
+      // Person sub-header
+      htmlRows += '<tr><td colspan="4" style="background:#e8edf2;padding:6px 12px;font-weight:600;font-size:12px;color:#334155">'+u.name+' &nbsp;<span style="font-weight:400;color:#64748b">'+fmtSec(us)+'</span></td></tr>';
+      // Task rows
+      ue.forEach(function(e){
+        var t=TASKS.find(function(tk){return tk.id===e.taskId;});
+        var cl=getClient(t?.clientId);
+        htmlRows += '<tr>'
+          +'<td style="padding:5px 12px 5px 24px;font-size:12px;color:#1e293b;border-bottom:1px solid #f1f5f9">'+(t?.title||'–')+'</td>'
+          +'<td style="padding:5px 12px;font-size:12px;color:#475569;border-bottom:1px solid #f1f5f9">'+(cl?.name||'–')+'</td>'
+          +'<td style="padding:5px 12px;font-size:12px;color:#64748b;border-bottom:1px solid #f1f5f9">'+(e.notes||'')+'</td>'
+          +'<td style="padding:5px 12px;font-size:12px;font-weight:600;color:#2563a8;font-family:monospace;text-align:right;border-bottom:1px solid #f1f5f9">'+fmtSec(e.seconds||0)+'</td>'
+          +'</tr>';
+      });
+    });
+  });
+
+  textBody.push(firm);
+
+  // Build full HTML email
+  var htmlBody = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+    +'<body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif">'
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:20px 0"><tr><td align="center">'
+    +'<table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">'
+    +'<tr><td style="background:linear-gradient(135deg,#1a3557,#2563a8);padding:20px 24px">'
+    +'<h1 style="color:#fff;margin:0;font-size:18px;font-weight:700">'+firm+'</h1>'
+    +'<p style="color:rgba(255,255,255,.8);margin:4px 0 0;font-size:13px">Company Daily Report &nbsp;·&nbsp; '+fmtDate(todayStr)+'</p>'
+    +'</td></tr>'
+    +'<tr><td style="padding:16px 24px">'
+    +'<p style="margin:0 0 16px;font-size:13px;color:#334155">Total time logged today: <strong style="color:#1a3557">'+fmtSec(total)+'</strong></p>'
+    +'<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden">'
+    +'<thead><tr style="background:#f8fafc">'
+    +'<th style="padding:8px 12px;text-align:left;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0">Task</th>'
+    +'<th style="padding:8px 12px;text-align:left;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0">Company</th>'
+    +'<th style="padding:8px 12px;text-align:left;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0">Notes</th>'
+    +'<th style="padding:8px 12px;text-align:right;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #e2e8f0">Time</th>'
+    +'</tr></thead><tbody>'
+    +htmlRows
+    +'</tbody></table>'
+    +'</td></tr>'
+    +'<tr><td style="background:#f8fafc;padding:12px 24px;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8">'
+    +'Sent via TaskHub by RB &bull; '+firm+'</td></tr>'
+    +'</table></td></tr></table></body></html>';
+
+  var subject='[Company] Daily Report – '+fmtDate(todayStr)+' – Total: '+fmtSec(total);
+  var adminEmails=admins.filter(function(a){return a.active!==false&&a.email;}).map(function(a){return a.email;});
+  if(adminEmails.length) await sendEmailBCC(adminEmails,subject,textBody.join('\n'),htmlBody);
 }
+
 
 // Rule 12: Weekly summary (Monday 9am)
 async function sendWeeklySummary(ds){
@@ -4514,7 +4620,7 @@ function settR2HTML(){
   +'</div><div style="padding:14px">'
   +'<div class="form-row"><label class="form-label">Worker URL</label>'
   +'<input class="form-input" id="r2-worker-url" value="'+(cfg.workerUrl||'')+"\""
-  +' placeholder="https://your-worker.your-domain.workers.dev"/>'
+  +' placeholder="https://cool-flower-cda3.rushabh-23f.workers.dev"/>'
   +'<div style="font-size:10px;color:var(--text3);margin-top:3px">Deploy the TaskHub R2 Worker to Cloudflare and paste the URL here.</div></div>'
   +'<div class="g2">'
   +'<div class="form-row"><label class="form-label">Bucket Name</label>'
@@ -5259,15 +5365,15 @@ async function sendEmail(to,subject,body,taskTitle,assigneeName,dueDate){
   }
   return false;
 }
-async function sendEmailBCC(emails,subject,body){
+async function sendEmailBCC(emails,subject,body,prebuiltHtml){
   if(!emails||!emails.length) return false;
   var cfg=EMAILJS_CFG||{};
   var firm=getActiveFirm()?.name||'R B Shah & Associates';
   var logoUrl='https://rbshah.co.in/rbs-logo.png'; // RB logo URL
   if(cfg.gasUrl){
     try{
-      // Build HTML email with logo and styling
-      var htmlBody=buildHtmlEmail(subject,body,firm,logoUrl);
+      // Use pre-built HTML if provided (e.g. table-formatted reports), otherwise build from text
+      var htmlBody=prebuiltHtml||buildHtmlEmail(subject,body,firm,logoUrl);
       var p=new URLSearchParams({
         to:emails[0],  // primary recipient
         bcc:emails.slice(1).join(','), // rest as BCC
@@ -5356,7 +5462,12 @@ async function sendDigestEmail(to,name,tasks){
   }catch(e){return false}
 }
 
-function logNotif(entry){notifLog=[...notifLog.slice(-99),entry];LS.set('notifLog',notifLog)}
+function logNotif(entry){
+  notifLog=[...notifLog.slice(-99),entry];
+  // Save to Firebase so history persists across devices and survives cache clears
+  if(currentUser&&db) db.ref('notif_log').set(notifLog).catch(function(){});
+  else LS.set('notifLog',notifLog); // fallback to LS if not authenticated
+}
 
 // Auto-notify on task assignment change
 async function notifyAssignment(task,newAssigneeId){
@@ -8551,7 +8662,8 @@ function settingsPage(){
   <div class="sett-item" onclick="openModal('settClients',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Clients</div><div style="font-size:11px;color:var(--text3)">${CLIENTS.length} clients</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settRecurring',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Recurring Tasks</div><div style="font-size:11px;color:var(--text3)">${RECURRING.length} templates</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('whatsappConfig',{})"><div class="sett-icon" style="background:var(--teal-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">WhatsApp Notifications</div><div style="font-size:11px;color:${WHATSAPP_CFG?.enabled?'var(--accent)':'var(--text3)'}">via CallMeBot API</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
-  <div class="sett-item" onclick="openModal('settEmailJS',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div class="sett-item" onclick="openModal('settR2',{})"><div class="sett-icon" style="background:#f97316;opacity:.15;border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div class="sett-info"><div class="sett-title">Cloudflare R2 Storage</div><div class="sett-desc">${R2_CFG?.workerUrl?'✓ Configured':'Not configured'} · Document attachments</div></div></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Email Notifications (EmailJS)</div><div style="font-size:11px;color:${EMAILJS_CFG?.enabled?'var(--accent)':'var(--text3)'}">${EMAILJS_CFG?.enabled?'✓ Enabled':'Not configured'}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+  <div class="sett-item" onclick="openModal('settEmailJS',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Email Notifications (EmailJS)</div><div style="font-size:11px;color:${EMAILJS_CFG?.enabled?'var(--accent)':'var(--text3)'}">${EMAILJS_CFG?.enabled?'✓ Enabled':'Not configured'}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+  <div class="sett-item" onclick="openModal('settR2',{})"><div class="sett-icon" style="background:#f97316;opacity:.15;border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div><div class="sett-info"><div class="sett-title">Cloudflare R2 Storage</div><div class="sett-desc">${R2_CFG?.workerUrl?'✓ Configured':'Not configured'} · Document attachments</div></div></div>
   <div class="sett-item" onclick="openModal('settCAFirms',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">CA Firms (Certificate Register)</div><div style="font-size:11px;color:var(--text3)">${CA_FIRMS.length} firm${CA_FIRMS.length!==1?'s':''} · certificate number schemes</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   `:''}
   <div class="section-label">About</div>
@@ -9418,6 +9530,17 @@ async function saveTaskDates(id){
 
   // Role check: employees cannot change dates
   if(currentUser.role==='employee'){toast('Only managers/admins can change dates');return;}
+
+  // High priority tasks: due date cannot be moved more than 3 days forward
+  if(dueDateChanging&&(t.priority==='high'||t.priority==='urgent')&&currentUser.role!=='superadmin'){
+    const oldD=new Date(t.dueDate+'T00:00:00');
+    const newD=new Date(newDue+'T00:00:00');
+    const diffDays=Math.round((newD-oldD)/86400000);
+    if(diffDays>3){
+      toast('⚠ High/Urgent priority tasks cannot have due date extended by more than 3 days. Contact Super Admin to override.');
+      return;
+    }
+  }
 
   // Due date change limit check
   if(dueDateChanging && currentUser.role!=='superadmin'){

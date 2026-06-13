@@ -315,6 +315,14 @@ body{font-size:var(--base-font)}
   .filter-bar{gap:5px}
   .ms-trigger{padding:4px 8px;font-size:11px}
 }
+
+.dsc-mobile-cards{display:none}
+.dsc-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:.15s}
+.dsc-card:hover{border-color:var(--accent)}
+@media(max-width:768px){
+  .dsc-mobile-cards{display:block}
+  .dsc-desktop-table{display:none}
+}
 @media(max-width:640px){
   /* Slide-in drawer nav on mobile */
   .side-nav{position:fixed;top:0!important;left:-260px;width:240px!important;height:100vh;flex-direction:column;border-right:1px solid var(--border);border-top:none;padding:60px 0 8px;z-index:200;background:var(--bg2);transition:left .25s ease;box-shadow:none}
@@ -689,6 +697,8 @@ let DSC_MOVEMENTS=[];
 let TASK_DEPS={};  // {taskId: {blockedBy:[...], blocks:[...]}}
 let R2_CFG=null; // {workerUrl, bucketName}
 let dscFilter={search:'',status:'all',expiryDays:'',tab:0};
+let dscBulkMode=false;
+let selectedDscs=new Set();
 let dscExpiry=30;        // [{id,taskId,userId,date,qty,seconds,note}]
 let batchLogLoaded=false;
 let showClosedBilled=false; // #3: hide invoiced closed tasks by default
@@ -3187,11 +3197,102 @@ function dscPage(){
     const q=(dscFilter.search||'').toLowerCase();
     if(q) records=records.filter(d=>(d.serial||'').toLowerCase().includes(q)||(d.company||'').toLowerCase().includes(q)||(d.holderName||'').toLowerCase().includes(q)||(d.panNo||'').toLowerCase().includes(q)||(d.currentWith||'').toLowerCase().includes(q));
     if(dscFilter.status!=='all') records=records.filter(d=>dscStatus(d)===dscFilter.status);
+    records=records.sort((a,b)=>(a.serial||'').localeCompare(b.serial||''));
 
     const inOffice=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='in_office').length;
     const withCS=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='with_cs').length;
     const withClient=DSC_RECORDS.filter(d=>d.active!==false&&dscStatus(d)==='with_client').length;
     const expiringSoon=DSC_RECORDS.filter(d=>d.active!==false&&d.expiryDate&&Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000)<=30&&Math.floor((new Date(d.expiryDate+'T00:00:00')-now)/86400000)>=0).length;
+
+    // ── Bulk action toolbar ──
+    let bulkBar='';
+    if(isAdmin){
+      if(dscBulkMode){
+        bulkBar='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">'
+          +'<button class="btn btn-ghost btn-sm" onclick="selectAllDscs('+JSON.stringify(records.map(d=>d.id)).replace(/"/g,'&quot;')+')">'
+          +(selectedDscs.size===records.length&&records.length?'☑ Unselect All':'☐ Select All')+'</button>'
+          +'<span style="font-size:11px;color:var(--text3)">'+selectedDscs.size+' selected</span>'
+          +(selectedDscs.size?'<button class="btn btn-sm" style="background:var(--red-bg,rgba(239,68,68,.12));color:var(--red)" onclick="deleteSelectedDscs()">🗑 Delete Selected ('+selectedDscs.size+')</button>':'')
+          +'<button class="btn btn-ghost btn-sm" onclick="toggleDscBulkMode()">Cancel</button>'
+          +'</div>';
+      } else {
+        bulkBar='<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">'
+          +'<button class="btn btn-ghost btn-sm" onclick="toggleDscBulkMode()">☑ Select</button>'
+          +(DSC_RECORDS.length?'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteAllDscs()">🗑 Delete All</button>':'')
+          +'</div>';
+      }
+    }
+
+    // ── Mobile compact card view ──
+    let mobileCards='<div class="dsc-mobile-cards">';
+    if(records.length){
+      mobileCards += records.map(d=>{
+        const st=dscStatus(d);
+        const checked=selectedDscs.has(d.id);
+        const checkbox=dscBulkMode?'<input type="checkbox" '+(checked?'checked':'')+' onclick="event.stopPropagation();toggleDscSelect(\''+d.id+'\')" style="width:18px;height:18px;margin-right:8px"/>':'';
+        // Build the single primary action button based on status
+        let actionBtn='';
+        if(isAdmin){
+          if(st==='in_office'){
+            actionBtn='<button class="btn btn-xs" style="background:var(--blue-bg);color:var(--blue)" onclick="event.stopPropagation();dscMarkWithCS(\''+d.id+'\')">→ CS</button>'
+              +'<button class="btn btn-xs" style="background:var(--amber-bg);color:var(--amber)" onclick="event.stopPropagation();openModal(\'dscOutward\',{dscId:\''+d.id+'\'})">→ Client</button>';
+          } else if(st==='with_cs'){
+            actionBtn='<button class="btn btn-xs" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="event.stopPropagation();dscMarkInwardFromCS(\''+d.id+'\')">← Office</button>';
+          } else if(st==='with_client'){
+            actionBtn='<button class="btn btn-xs" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="event.stopPropagation();openModal(\'dscInward\',{dscId:\''+d.id+'\'})">← Return</button>';
+          }
+        }
+        return '<div class="dsc-card" onclick="'+(dscBulkMode?'toggleDscSelect(\''+d.id+'\')':'openModal(\'dscDetail\',{id:\''+d.id+'\'})')+'">'
+          +'<div style="display:flex;align-items:flex-start;gap:6px">'
+          +checkbox
+          +'<div style="flex:1;min-width:0">'
+          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+          +'<span style="font-family:var(--mono);font-weight:700;color:var(--accent);font-size:11px">'+d.serial+'</span>'
+          +dscStatusBadge(d)
+          +'</div>'
+          +'<div style="font-weight:600;font-size:13px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(d.company||'—')+'</div>'
+          +'<div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(d.holderName||'—')+'</div>'
+          +'</div>'
+          +'</div>'
+          +(actionBtn?'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+actionBtn+'</div>':'')
+          +'</div>';
+      }).join('');
+    } else {
+      mobileCards += '<div style="padding:2rem;text-align:center;color:var(--text3)">No DSC records match</div>';
+    }
+    mobileCards += '</div>';
+
+    // ── Desktop table view ──
+    let desktopTable='<div class="dsc-desktop-table" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">'
+      +(dscBulkMode?'<th style="padding:7px 8px;width:30px"></th>':'')
+      +'<th style="padding:7px 8px;text-align:left">Serial</th>'
+      +'<th style="padding:7px 8px;text-align:left">Company</th>'
+      +'<th style="padding:7px 8px;text-align:left">Holder / PAN</th>'
+      +'<th style="padding:7px 8px;text-align:left">Class</th>'
+      +'<th style="padding:7px 8px;text-align:left">Expiry</th>'
+      +'<th style="padding:7px 8px;text-align:left">Status / Location</th>'
+      +'<th style="padding:7px 8px;text-align:left">Actions</th>'
+      +'</tr></thead><tbody>'
+      +( records.length
+        ? records.map((d,i)=>{
+            const st=dscStatus(d);
+            const rowBg=i%2===0?'transparent':'var(--bg2)';
+            const checked=selectedDscs.has(d.id);
+            return '<tr style="border-bottom:1px solid var(--border);background:'+rowBg+'">'
+              +(dscBulkMode?'<td style="padding:6px 8px"><input type="checkbox" '+(checked?'checked':'')+' onclick="toggleDscSelect(\''+d.id+'\')"/></td>':'')
+              +'<td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:var(--accent)">'+d.serial+'</td>'
+              +'<td style="padding:6px 8px"><div style="font-weight:500">'+escHtml(d.company||'—')+'</div><div style="font-size:10px;color:var(--text3)">'+escHtml(d.currentWith||'')+'</div></td>'
+              +'<td style="padding:6px 8px"><div>'+escHtml(d.holderName||'—')+'</div><div style="font-size:10px;color:var(--text3);font-family:var(--mono)">'+escHtml(d.panNo||'')+'</div></td>'
+              +'<td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+escHtml(d.dscClass||'')+'</td>'
+              +'<td style="padding:6px 8px">'+dscExpiryBadge(d)+'</td>'
+              +'<td style="padding:6px 8px">'+dscStatusBadge(d)+'</td>'
+              +'<td style="padding:6px 8px;white-space:nowrap">'+dscQuickBtns(d,isAdmin)+'</td>'
+              +'</tr>';
+          }).join('')
+        : '<tr><td colspan="'+(dscBulkMode?8:7)+'" style="padding:2rem;text-align:center;color:var(--text3)">No DSC records match</td></tr>'
+      )
+      +'</tbody></table></div>';
 
     return pageHdr()
       +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:12px">'
@@ -3213,33 +3314,9 @@ function dscPage(){
       +'</select>'
       +((dscFilter.search||dscFilter.status!=='all')?'<button class="btn btn-ghost btn-xs" onclick="dscFilter.search=\'\';dscFilter.status=\'all\';render()">✕ Clear</button>':'')
       +'</div>'
-      +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
-      +'<thead><tr style="background:var(--bg3);border-bottom:2px solid var(--border)">'
-      +'<th style="padding:7px 8px;text-align:left">Serial</th>'
-      +'<th style="padding:7px 8px;text-align:left">Company</th>'
-      +'<th style="padding:7px 8px;text-align:left">Holder / PAN</th>'
-      +'<th style="padding:7px 8px;text-align:left">Class</th>'
-      +'<th style="padding:7px 8px;text-align:left">Expiry</th>'
-      +'<th style="padding:7px 8px;text-align:left">Status / Location</th>'
-      +'<th style="padding:7px 8px;text-align:left">Actions</th>'
-      +'</tr></thead><tbody>'
-      +( records.length
-        ? records.sort((a,b)=>(a.serial||'').localeCompare(b.serial||'')).map((d,i)=>{
-            const st=dscStatus(d);
-            const rowBg=i%2===0?'transparent':'var(--bg2)';
-            return '<tr style="border-bottom:1px solid var(--border);background:'+rowBg+'">'
-              +'<td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:var(--accent)">'+d.serial+'</td>'
-              +'<td style="padding:6px 8px"><div style="font-weight:500">'+escHtml(d.company||'—')+'</div><div style="font-size:10px;color:var(--text3)">'+escHtml(d.currentWith||'')+'</div></td>'
-              +'<td style="padding:6px 8px"><div>'+escHtml(d.holderName||'—')+'</div><div style="font-size:10px;color:var(--text3);font-family:var(--mono)">'+escHtml(d.panNo||'')+'</div></td>'
-              +'<td style="padding:6px 8px;font-size:10px;color:var(--text3)">'+escHtml(d.dscClass||'')+'</td>'
-              +'<td style="padding:6px 8px">'+dscExpiryBadge(d)+'</td>'
-              +'<td style="padding:6px 8px">'+dscStatusBadge(d)+'</td>'
-              +'<td style="padding:6px 8px;white-space:nowrap">'+dscQuickBtns(d,isAdmin)+'</td>'
-              +'</tr>';
-          }).join('')
-        : '<tr><td colspan="7" style="padding:2rem;text-align:center;color:var(--text3)">No DSC records match</td></tr>'
-      )
-      +'</tbody></table></div>';
+      +bulkBar
+      +mobileCards
+      +desktopTable;
   }
 
   // ── TAB 1: Movement Log ──────────────────────────────────────────────────
@@ -3421,6 +3498,7 @@ function dscQuickBtns(d, isAdmin){
     if(st==='with_client'){
       btns.push('<button class="btn btn-xs" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="openModal(\'dscInward\',{dscId:\''+d.id+'\'})">← Return</button>');
     }
+    btns.push('<button class="btn btn-ghost btn-xs" style="color:var(--red)" onclick="deleteDscRecord(\''+d.id+'\')" title="Delete">🗑</button>');
   }
   return btns.join('');
 }
@@ -4645,25 +4723,86 @@ function settR2HTML(){
   +'</ol></div>';
 }
 async function saveR2Config(){
-  const workerUrl=(document.getElementById('r2-worker-url')?.value||'').trim();
-  if(!workerUrl){toast('Enter the Worker URL');return;}
+  var rawUrl=(document.getElementById('r2-worker-url')?.value||'').trim();
+  if(!rawUrl){toast('Enter the Worker URL');return;}
+  var workerUrl=rawUrl.startsWith('http')?rawUrl:'https://'+rawUrl;
+  // Remove trailing slash
+  workerUrl=workerUrl.replace(/\/+$/,'');
   await db.ref('r2_config').set({
     workerUrl,
-    bucketName:(document.getElementById('r2-bucket')?.value||'').trim(),
+    bucketName:(document.getElementById('r2-bucket')?.value||'').trim()||'rbtasks',
     secretKey:(document.getElementById('r2-secret')?.value||'').trim()
   });
-  toast('R2 config saved ✓');
+  toast('R2 config saved ✓ — Worker: '+workerUrl);
 }
 async function testR2Config(){
-  const url=(document.getElementById('r2-worker-url')?.value||R2_CFG?.workerUrl||'').trim();
-  if(!url){toast('Enter Worker URL first');return;}
+  var rawUrl=(document.getElementById('r2-worker-url')?.value||R2_CFG?.workerUrl||'').trim();
+  if(!rawUrl){toast('Enter Worker URL first');return;}
+  // Ensure https://
+  var url=rawUrl.startsWith('http')?rawUrl:'https://'+rawUrl;
   toast('Testing connection...');
   try{
     const key=(document.getElementById('r2-secret')?.value||R2_CFG?.secretKey||'').trim();
-    const r=await fetch(url+'/health',{headers:{'X-Secret':key}});
-    if(r.ok){toast('✓ R2 Worker connected successfully!');}
-    else{toast('Worker responded with error: '+r.status);}
-  }catch(e){toast('Cannot reach Worker: '+e.message);}
+    const r=await fetch(url+'/health',{
+      headers:{'X-Secret':key,'Content-Type':'application/json'}
+    });
+    const txt=await r.text();
+    if(r.ok){toast('✓ R2 Worker connected! '+txt.slice(0,60));}
+    else{toast('Worker error '+r.status+': '+txt.slice(0,80));}
+  }catch(e){toast('Cannot reach Worker: '+e.message+' — Check the URL includes https://');}
+}
+
+
+// ─── DSC Delete ─────────────────────────────────────────────────────────
+async function deleteDscRecord(id){
+  const d=DSC_RECORDS.find(x=>x.id===id);
+  if(!d) return;
+  if(!confirm('Delete DSC '+(d.serial||'')+' — '+(d.company||'')+'? This cannot be undone.')) return;
+  await fbDel('dsc_records/'+id);
+  // Also remove related movement logs
+  const movs=DSC_MOVEMENTS.filter(m=>m.dscId===id);
+  for(const m of movs){ await fbDel('dsc_movements/'+m.id); }
+  toast('DSC '+(d.serial||'')+' deleted');
+  render();
+}
+function toggleDscSelect(id){
+  if(selectedDscs.has(id)) selectedDscs.delete(id); else selectedDscs.add(id);
+  render();
+}
+function toggleDscBulkMode(){
+  dscBulkMode=!dscBulkMode;
+  selectedDscs=new Set();
+  render();
+}
+function selectAllDscs(records){
+  if(selectedDscs.size===records.length) selectedDscs=new Set();
+  else selectedDscs=new Set(records.map(d=>d.id));
+  render();
+}
+async function deleteSelectedDscs(){
+  if(!selectedDscs.size){toast('No DSCs selected');return;}
+  if(!confirm('Delete '+selectedDscs.size+' selected DSC record(s)? This cannot be undone.')) return;
+  for(const id of selectedDscs){
+    await fbDel('dsc_records/'+id);
+    const movs=DSC_MOVEMENTS.filter(m=>m.dscId===id);
+    for(const m of movs){ await fbDel('dsc_movements/'+m.id); }
+  }
+  toast(selectedDscs.size+' DSC record(s) deleted');
+  selectedDscs=new Set();
+  dscBulkMode=false;
+  render();
+}
+async function deleteAllDscs(){
+  const all=DSC_RECORDS;
+  if(!all.length){toast('No DSC records to delete');return;}
+  if(!confirm('⚠ Delete ALL '+all.length+' DSC records and their movement history? This is PERMANENT and cannot be undone.')) return;
+  if(!confirm('Are you absolutely sure? Type-confirm by clicking OK again to permanently delete everything.')) return;
+  for(const d of all){ await fbDel('dsc_records/'+d.id); }
+  for(const m of DSC_MOVEMENTS){ await fbDel('dsc_movements/'+m.id); }
+  toast('All DSC records deleted');
+  selectedDscs=new Set();
+  dscBulkMode=false;
+  render();
 }
 
 // ═══════════════════════════════════════

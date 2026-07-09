@@ -9917,18 +9917,20 @@ function taskDetailHTML(data){
       <input class='form-input' type='number' id='budget-hours' min='0' step='0.5'
         value='${t.budgetSeconds?+(t.budgetSeconds/3600).toFixed(1):""}' placeholder='Budget hrs'
         style='width:90px;font-size:11px;padding:3px 6px;height:26px'/>
-      <button class='btn btn-ghost btn-xs' onclick='saveBudgetTime("${id}")' style='height:26px;padding:0 8px'>Set</button>
+      <button class='btn btn-ghost btn-xs' onclick="saveBudgetTime('${id}')" style='height:26px;padding:0 8px'>Set</button>
       ${t.budgetSeconds?`<span style='color:var(--accent);font-size:11px'>${(t.budgetSeconds/3600).toFixed(1)}h budget</span>`:'<span style="color:var(--text3);font-size:10px">No budget</span>'}
     `:`${t.budgetSeconds?`<span style='color:var(--accent);font-size:11px'>${(t.budgetSeconds/3600).toFixed(1)}h budget</span>`:''}`}
-    ${t.timeExtensionRequest?.status==='pending'?`<span style='color:var(--amber);font-size:10px'>⏳ Ext. pending${(currentUser.role==='superadmin'||currentUser.role==='manager')?` — <button class='btn btn-xs' style='background:var(--green-bg);color:var(--green,#4ade80);padding:1px 6px' onclick='approveTimeExtension("${id}")'>✓</button> <button class='btn btn-ghost btn-xs' style='color:var(--red);padding:1px 6px' onclick='rejectTimeExtension("${id}")'>✗</button>`:''}</span>`:''}
+    ${t.timeExtensionRequest?.status==='pending'?`<span style='color:var(--amber);font-size:10px'>⏳ Ext. pending${(currentUser.role==='superadmin'||currentUser.role==='manager')?` — <button class='btn btn-xs' style='background:var(--green-bg);color:var(--green,#4ade80);padding:1px 6px' onclick="approveTimeExtension('${id}')">✓</button> <button class='btn btn-ghost btn-xs' style='color:var(--red);padding:1px 6px' onclick="rejectTimeExtension('${id}')">✗</button>`:''}</span>`:''}
   </div>
 </div>
     <div style='background:var(--bg3);border-radius:var(--r2);padding:10px;margin-bottom:12px;text-align:center'>
       <div style='font-size:10px;color:var(--text3);margin-bottom:4px'>Total time logged</div>
       <div class='${isRunning?"btv":""}' style='font-family:var(--mono);font-size:28px;font-weight:600;color:var(--accent)'>${fmtTimer(sec)}</div>
       <div style='display:flex;gap:7px;justify-content:center;margin-top:9px'>
-        ${isRunning?`<button class='btn btn-danger btn-sm' onclick='stopTimer()'>⏹ Stop</button>`:`<button class='btn btn-primary btn-sm' onclick='startTimer(\'${id}\')'>▶ Start</button>`}
-        <button class='btn btn-ghost btn-sm' onclick='openModal(\'manualTime\',{taskId:\'${id}\'})'>+ Manual</button>
+        ${isRunning?`<button class='btn btn-danger btn-sm' onclick='stopTimer()'>⏹ Stop</button>`:`<button class='btn btn-primary btn-sm' onclick="startTimer('${id}')">▶ Start</button>`}
+        <button class='btn btn-ghost btn-sm' onclick="openModal('manualTime',{taskId:'${id}'})">+ Manual</button>
+        ${currentUser.role==='superadmin'?`<button class="btn btn-ghost btn-sm" onclick="openModal('mergeTask',{targetId:'${id}'})">⇒ Merge</button>`:''}
+        ${isBatchTask(t)?`<button class="btn btn-ghost btn-sm" onclick="openModal('batchLog',{taskId:'${id}'})">📊 Log Count</button>`:''}
       </div>
     </div>
     <div style='font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px'>Time Entries (${entries.length})</div>
@@ -9956,14 +9958,14 @@ function taskDetailHTML(data){
           <span style='color:var(--text3)'>${e.date||''}</span>
           <span style='color:var(--text2)'>${eu?shortName(eu.name):''} ${e.note?'· '+e.note:''}</span>
           <span style='font-family:var(--mono);color:var(--accent);font-weight:600'>${fmtSec(e.seconds)}</span>
-          ${canEdit?`<button style='background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:1px 5px' onclick='openModal(\'editTime\',{entryId:\'${e.id}\'})'>✎</button>`:''}
+          ${canEdit?`<button style='background:none;border:none;cursor:pointer;color:var(--text3);font-size:10px;padding:1px 5px' onclick="openModal('editTime',{entryId:'${e.id}'})">✎</button>`:''}
         </div>`}).join(''):`<div style='font-size:11px;color:var(--text3)'>No time logged yet</div>`}
     </div>
     <div style='font-size:11px;font-weight:600;color:var(--text3);margin-bottom:8px'>Comments (${taskComments.length})</div>
     <div style='max-height:200px;overflow-y:auto;margin-bottom:10px'>
       ${taskComments.length?taskComments.map(c=>{const cu=getUser(c.userId);return`<div class='comment-item'><div style='display:flex;align-items:center;gap:6px;margin-bottom:3px'><div class='avatar ${avClass(c.userId)}' style='width:20px;height:20px;font-size:8px'>${initials(cu?.name||'?')}</div><span style='font-size:11px;font-weight:600'>${cu?.name||''}</span><span style='font-size:10px;color:var(--text3)'>${new Date(c.ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div><div style='font-size:12px;padding-left:27px'>${c.text}</div></div>`;}).join(''):`<div style='font-size:12px;color:var(--text3)'>No comments yet</div>`}
     </div>
-    <div style='display:flex;gap:7px'><input class='form-input' id='comment-input' placeholder='Add comment…' style='flex:1;font-size:12px' onkeydown="if(event.key==='Enter')addComment('${id}')"/><button class='btn btn-primary btn-sm' onclick='addComment(\'${id}\')'>Post</button></div>
+    <div style='display:flex;gap:7px'><input class='form-input' id='comment-input' placeholder='Add comment…' style='flex:1;font-size:12px' onkeydown="if(event.key==='Enter')addComment('${id}')"/><button class='btn btn-primary btn-sm' onclick="addComment('${id}')">Post</button></div>
   
     <div style='margin-top:14px;border-top:1px solid var(--border);padding-top:10px'>
       <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>🕐 Change History</div>

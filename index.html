@@ -1104,7 +1104,15 @@ async function createRecurring(){
 function dueTodayDash(){
   const todayStr=today();
   const allTasks=myTasks().filter(t=>!t.private&&!isTaskTerminal(t));
-  const dueTodayTasks=allTasks.filter(t=>t.dueDate===todayStr);
+  const dueTodayTasks=allTasks.filter(t=>{
+    if(!t.dueDate) return false;
+    const start=t.startDate||t.dueDate;
+    return start<=todayStr&&t.dueDate>=todayStr;
+  }).sort((a,b)=>{
+    // Sort by days remaining (ascending) — tasks due soonest first
+    const da=new Date(a.dueDate+'T00:00:00'),db=new Date(b.dueDate+'T00:00:00');
+    return da-db;
+  });
   const overdueTasks=allTasks.filter(t=>t.dueDate&&t.dueDate<todayStr);
   return`
   <div class="g3 mb-14">
@@ -4016,31 +4024,65 @@ async function dscPreviewImport(input){
       return;
     }
 
-    const headerRow=rawRows[0].map(c=>String(c??'').trim().toLowerCase());
+    // Normalize a header: lowercase, strip "(…)" hints, collapse whitespace, trim
+    function normHeader(s){
+      return String(s??'').toLowerCase().replace(/\([^)]*\)/g,'').replace(/\s+/g,' ').trim();
+    }
+    const headerRowRaw=rawRows[0].map(c=>String(c??'').trim());
+    const headerRow=headerRowRaw.map(normHeader);
 
-    // ── Strict header → field mapping ──
-    // Each field maps to the FIRST header column whose name matches the pattern.
-    // If a required header is completely missing from the file, that's a file-level error.
-    const fieldMap={
-      company:        headerRow.findIndex(h=>h.includes('company')),
-      holderName:     headerRow.findIndex(h=>h.includes('holder')),
-      panNo:          headerRow.findIndex(h=>h.includes('pan')),
-      dscClass:       headerRow.findIndex(h=>h.includes('class')),
-      entryDate:      headerRow.findIndex(h=>h.includes('entry')),
-      expiryDate:     headerRow.findIndex(h=>h.includes('expiry')),
-      givenBy:        headerRow.findIndex(h=>h.includes('given by')&&!h.includes('contact')),
-      givenByContact: headerRow.findIndex(h=>h.includes('contact')),
-      location:       headerRow.findIndex(h=>h.includes('location')),
-      currentWith:    headerRow.findIndex(h=>h.includes('currently')),
-      remarks:        headerRow.findIndex(h=>h.includes('remark')),
+    // ── Strict header → field mapping (exact match against known synonyms) ──
+    // Each field is matched by EXACT normalized header text — no fuzzy/substring
+    // matching, so "Company Name" can never be confused with "PAN No".
+    const FIELD_SYNONYMS={
+      company:        ['company name','company'],
+      holderName:     ['holder name','holder','authorised person','authorized person','holder / authorised person'],
+      panNo:          ['pan no','pan no.','pan number','pan'],
+      dscClass:       ['dsc class','class'],
+      entryDate:      ['entry date','date of entry'],
+      expiryDate:     ['expiry date','date of expiry','expiry'],
+      givenBy:        ['given by'],
+      givenByContact: ['given by contact','contact','given by contact no'],
+      location:       ['current location','location','current status'],
+      currentWith:    ['currently with','current with'],
+      remarks:        ['remarks','remark','notes'],
     };
+    const FIELD_LABELS={
+      company:'Company Name',holderName:'Holder Name',panNo:'PAN No',dscClass:'DSC Class',
+      entryDate:'Entry Date',expiryDate:'Expiry Date',givenBy:'Given By',
+      givenByContact:'Given By Contact',location:'Current Location',
+      currentWith:'Currently With',remarks:'Remarks'
+    };
+
+    const fieldMap={};
+    Object.keys(FIELD_SYNONYMS).forEach(f=>{fieldMap[f]=-1;});
+    headerRow.forEach((h,colIdx)=>{
+      for(const field of Object.keys(FIELD_SYNONYMS)){
+        if(fieldMap[field]===-1&&FIELD_SYNONYMS[field].includes(h)){
+          fieldMap[field]=colIdx;
+          break; // this column is now claimed — won't match any other field
+        }
+      }
+    });
 
     const missingHeaders=[];
     if(fieldMap.company<0) missingHeaders.push('Company Name');
     if(missingHeaders.length){
-      preview.innerHTML='<div style="color:var(--red);font-size:12px;font-weight:600">Required column(s) not found in file: '+missingHeaders.join(', ')+'.<br>Please download the sample and match the header row exactly.</div>';
+      preview.innerHTML='<div style="color:var(--red);font-size:12px;font-weight:600">Required column not found: '+missingHeaders.join(', ')+'.<br>Found headers: '+headerRowRaw.map(escHtml).join(', ')+'<br>Please download the sample and keep the header row text unchanged.</div>';
       return;
     }
+
+    // ── Column mapping report (always shown so user can verify) ──
+    const colLetter=(i)=>{let s='';i++;while(i>0){s=String.fromCharCode(65+((i-1)%26))+s;i=Math.floor((i-1)/26);}return s;};
+    let mappingHtml='<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;margin-bottom:10px;font-size:11px">'
+      +'<div style="font-weight:600;color:var(--text2);margin-bottom:4px">Detected column mapping:</div>'
+      +Object.keys(FIELD_SYNONYMS).map(f=>{
+        const ci=fieldMap[f];
+        const required=f==='company';
+        const val=ci>=0?('Column '+colLetter(ci)+' ("'+escHtml(headerRowRaw[ci])+'")'):('<span style="color:'+(required?'var(--red)':'var(--text3)')+'">not found'+(required?'':' — will be left blank')+'</span>');
+        return '<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--text3)">'+FIELD_LABELS[f]+'</span><span>'+val+'</span></div>';
+      }).join('')
+      +'</div>';
 
     const allErrors=[];
     const records=[];
@@ -4125,7 +4167,7 @@ async function dscPreviewImport(input){
     _dscImportErrors=allErrors;
 
     // ── Render preview ──
-    let html='';
+    let html=mappingHtml;
     if(allErrors.length){
       html+='<div style="background:rgba(239,68,68,.1);border:1px solid var(--red);border-radius:var(--r);padding:10px 12px;margin-bottom:10px">'
         +'<div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:6px">⚠ '+allErrors.length+' row(s) have errors — fix the file and re-upload before importing</div>'
@@ -4554,7 +4596,7 @@ function checkScheduledEmails(){
   var slotKey=dateStr+'-'+hhmm;
   if(window._lastEmailSlot===slotKey)return;
   if(hhmm==='09:30'){window._lastEmailSlot=slotKey;sendMorningDigest(dateStr);}
-  if(hhmm==='20:00'){window._lastEmailSlot=slotKey;sendEveningDigest(dateStr);}
+  if(hhmm==='22:00'){window._lastEmailSlot=slotKey;sendEveningDigest(dateStr);}
   if(hhmm==='09:00'&&day===1){window._lastEmailSlot=slotKey;sendWeeklySummary(dateStr);}
 }
 
@@ -5079,6 +5121,101 @@ async function saveDscBulkEdit(){
   dscBulkMode=false;
   closeModal();
   toast('✓ Updated '+count+' DSC record(s)');
+}
+
+
+// ─── Billing Invoice Modal ────────────────────────────────────────────────
+function billingInvoiceHTML(data){
+  const taskIds=data?.taskIds||[];
+  const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
+  if(!tasks.length) return mHdr('Invoice')+'<p style="padding:12px">No tasks selected.</p>';
+  const totalAmt=tasks.reduce((a,t)=>a+(t.billingAmount||0),0);
+  const totalSec=tasks.reduce((a,t)=>a+(t.seconds||TIME_ENTRIES.filter(e=>e.taskId===t.id).reduce((s,e)=>s+(e.seconds||0),0)||0),0);
+  const multiTask=tasks.length>1;
+  return `${mHdr((multiTask?'Merge & ':'')+'Invoice '+(multiTask?tasks.length+' Tasks':tasks[0].title))}
+  ${multiTask?`<div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:10px;max-height:140px;overflow-y:auto">`
+    +tasks.map(t=>`<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)">`
+      +`<span style="color:var(--accent);font-family:var(--mono)">${t.status}</span> ${escHtml(t.title||'')} `
+      +`<span style="color:var(--text3)">${getClient(t.clientId)?.name||''}</span></div>`).join('')
+    +'</div>':''}
+  <div class="g2" style="margin-bottom:10px">
+    <div class="form-row"><label class="form-label">Invoice Number *</label>
+      <input class="form-input" id="inv-number" placeholder="e.g. INV-2025-001" autofocus/>
+    </div>
+    <div class="form-row"><label class="form-label">Invoice Date</label>
+      <input class="form-input" type="date" id="inv-date" value="${today()}"/>
+    </div>
+  </div>
+  <div class="form-row" style="margin-bottom:10px"><label class="form-label">Amount (₹)</label>
+    <input class="form-input" type="number" id="inv-amount" value="${totalAmt||''}" placeholder="Billing amount"/>
+  </div>
+  ${multiTask?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">⚠ These ${tasks.length} tasks will be merged under one invoice number. Individual tasks will be marked as invoiced.</div>`:''}
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-primary" style="flex:1" onclick="saveBillingInvoice(${JSON.stringify(taskIds)})">✓ ${multiTask?'Merge & ':''} Mark as Invoiced</button>
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+  </div>`;
+}
+
+async function saveBillingInvoice(taskIds){
+  const invNo=(document.getElementById('inv-number')?.value||'').trim();
+  const invDate=document.getElementById('inv-date')?.value||today();
+  const invAmt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;
+  if(!invNo){toast('Invoice number is required');return;}
+  const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
+  // If merging multiple tasks: store invoice group reference on each
+  const mergeId=taskIds.length>1?uid():null;
+  for(const t of tasks){
+    const upd={billingStatus:'invoiced',invoiceNo:invNo,invoiceDate:invDate,billingAmount:invAmt};
+    if(mergeId) upd.mergeGroupId=mergeId;
+    await fbUpd('tasks/'+t.id,upd);
+  }
+  closeModal();
+  toast('✓ '+tasks.length+' task(s) invoiced as '+invNo);
+}
+
+
+// ─── Time Budget ─────────────────────────────────────────────────────────
+async function saveBudgetTime(taskId){
+  const hrs=parseFloat(document.getElementById('budget-hours')?.value||'0');
+  if(isNaN(hrs)||hrs<0){toast('Enter a valid number of hours');return;}
+  const secs=hrs>0?Math.round(hrs*3600):null;
+  await fbUpd('tasks/'+taskId,{budgetSeconds:secs,timeExtensionRequest:null});
+  toast(secs?'Budget set to '+hrs+'h':'Budget cleared — unlimited time allowed');
+  render();
+}
+async function requestTimeExtension(taskId,totalLogged,budget){
+  const t=TASKS.find(x=>x.id===taskId);
+  const reason=prompt('Briefly explain why additional time is needed:');
+  if(!reason)return;
+  await fbUpd('tasks/'+taskId,{timeExtensionRequest:{status:'pending',requestedBy:currentUser.id,requestedAt:today(),totalLogged,budget,reason}});
+  toast('Time extension request submitted — awaiting admin approval');
+  render();
+}
+async function approveTimeExtension(taskId){
+  await fbUpd('tasks/'+taskId,{timeExtensionRequest:{status:'approved',approvedBy:currentUser.id,approvedAt:today()}});
+  toast('Time extension approved');
+  render();
+}
+async function rejectTimeExtension(taskId){
+  await fbUpd('tasks/'+taskId,{timeExtensionRequest:{status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()}});
+  toast('Time extension rejected');
+  render();
+}
+function taskTotalLoggedSec(taskId){
+  return TIME_ENTRIES.filter(e=>e.taskId===taskId).reduce((a,e)=>a+(e.seconds||0),0);
+}
+function checkBudgetGate(taskId,newSecs){
+  // Returns null if OK, or {blocked:true,reason,totalLogged,budget} if gate blocks
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t||!t.budgetSeconds) return null; // no budget — allow anything
+  if(t.timeExtensionRequest?.status==='approved') return null; // extension granted
+  const alreadyLogged=taskTotalLoggedSec(taskId);
+  const maxAllowed=Math.round(t.budgetSeconds*1.2);
+  if(alreadyLogged+newSecs<=maxAllowed) return null; // still within budget+20%
+  if(t.timeExtensionRequest?.status==='pending'){
+    return {blocked:true,reason:'Time extension pending admin approval.',totalLogged:alreadyLogged,budget:t.budgetSeconds};
+  }
+  return {blocked:true,reason:'Time limit reached ( '+(t.budgetSeconds/3600).toFixed(1)+'h, logged: '+(alreadyLogged/3600).toFixed(1)+'h). You have reached the limit. Request an extension.',totalLogged:alreadyLogged,budget:t.budgetSeconds};
 }
 
 // ═══════════════════════════════════════
@@ -7710,7 +7847,7 @@ function billingPage(){
           <td style="padding:8px 10px;white-space:nowrap">
             ${t.billingStatus==='invoiced'
               ?`<button class="btn btn-ghost btn-xs" onclick="fbUpd('tasks/${t.id}',{billingStatus:'unbilled'}).then(()=>toast('Moved back'))">↩</button>`
-              :`<button class="btn btn-gold btn-xs" onclick="fbUpd('tasks/${t.id}',{billingStatus:'invoiced'}).then(()=>toast('Invoiced ✓'))">✓ Invoice</button>`}
+              :`<button class="btn btn-gold btn-xs" onclick="openModal('billingInvoice',{taskIds:['${t.id}']})">✓ Invoice</button>`}
             <button class="btn btn-ghost btn-xs" onclick="openModal('taskDetail',{id:'${t.id}'})">→</button>
           </td>
         </tr>`;
@@ -7782,11 +7919,7 @@ async function doBulkInvoice(taskIds){
   if(!taskIds||!taskIds.length)return;
   const filtered=taskIds.filter(id=>TASKS.find(t=>t.id===id&&t.billingStatus!=='invoiced'));
   if(!filtered.length){toast('All already invoiced');return;}
-  if(!confirm('Mark '+filtered.length+' task(s) as invoiced?'))return;
-  for(const id of filtered){
-    await fbUpd('tasks/'+id,{billingStatus:'invoiced'});
-  }
-  toast('✓ '+filtered.length+' tasks marked as invoiced');
+  openModal('billingInvoice',{taskIds:filtered});
 }
 
 // ═══════════════════════════════════════
@@ -9113,6 +9246,7 @@ function modalHTML(){
     dscDetail:()=>dscDetailHTML(data),
     dscEdit:()=>dscEditHTML(data),
     dscBulkEdit:()=>dscBulkEditHTML(),
+    billingInvoice:()=>billingInvoiceHTML(data),
     dscOutward:()=>dscOutwardHTML(data),
     dscInward:()=>dscInwardHTML(data),
     dscImport:()=>dscImportHTML(),
@@ -9667,16 +9801,6 @@ function taskDetailHTML(data){
     ${t.recurringId?`<span class="recur-chip">↻</span>`:''}
     ${t.udinNotRequired?`<span style="font-size:10px;background:var(--amber-bg);color:var(--amber);padding:2px 7px;border-radius:99px">UDIN Waived</span>`:''}<div class='modal-cols'>
     <div class='modal-col-left'>
-<div style="background:var(--bg3);border-radius:var(--r2);padding:12px;text-align:center;margin-bottom:12px">
-    <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Total time logged</div>
-    <div class="${isRunning?'btv':''}" style="font-family:var(--mono);font-size:28px;font-weight:600;color:var(--accent)">${fmtTimer(sec)}</div>
-    <div style="display:flex;gap:7px;justify-content:center;margin-top:9px">
-      ${isRunning?`<button class="btn btn-danger btn-sm" onclick="stopTimer()">⏹ Stop</button>`:`<button class="btn btn-primary btn-sm" onclick="startTimer('${id}')">▶ Start</button>`}
-      <button class="btn btn-ghost btn-sm" onclick="openModal('manualTime',{taskId:'${id}'})">+ Manual</button>
-    ${isBatchTask(t)?`<button class="btn btn-primary btn-sm" onclick="openModal('batchLog',{taskId:'${id}'})">📊 Log Count</button>`:''}
-    ${currentUser.role==='superadmin'?`<button class="btn btn-ghost btn-sm" onclick="openModal('mergeTask',{targetId:'${id}'})">⇒ Merge</button>`:''}
-    </div>
-  </div>
 
   <!-- Cert toggle (audit) -->
   ${isAuditDept(t.deptId)?`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:11px;margin-bottom:12px">
@@ -9786,7 +9910,19 @@ function taskDetailHTML(data){
   }).join('')}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">No checklist items.</div>`}
   </div>
   <div class='modal-col-right'>
-    <div style='border-bottom:1px solid var(--border);margin-bottom:12px;padding-bottom:8px;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px'>Activity Log & Time</div>
+    <div style='display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);margin-bottom:12px;padding-bottom:10px'>
+  <div style='font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px'>Activity Log & Time</div>
+  <div style='display:flex;align-items:center;gap:8px;font-size:11px'>
+    ${(currentUser.role==='superadmin'||currentUser.role==='manager')?`
+      <input class='form-input' type='number' id='budget-hours' min='0' step='0.5'
+        value='${t.budgetSeconds?+(t.budgetSeconds/3600).toFixed(1):""}' placeholder='Budget hrs'
+        style='width:90px;font-size:11px;padding:3px 6px;height:26px'/>
+      <button class='btn btn-ghost btn-xs' onclick='saveBudgetTime("${id}")' style='height:26px;padding:0 8px'>Set</button>
+      ${t.budgetSeconds?`<span style='color:var(--accent);font-size:11px'>${(t.budgetSeconds/3600).toFixed(1)}h budget</span>`:'<span style="color:var(--text3);font-size:10px">No budget</span>'}
+    `:`${t.budgetSeconds?`<span style='color:var(--accent);font-size:11px'>${(t.budgetSeconds/3600).toFixed(1)}h budget</span>`:''}`}
+    ${t.timeExtensionRequest?.status==='pending'?`<span style='color:var(--amber);font-size:10px'>⏳ Ext. pending${(currentUser.role==='superadmin'||currentUser.role==='manager')?` — <button class='btn btn-xs' style='background:var(--green-bg);color:var(--green,#4ade80);padding:1px 6px' onclick='approveTimeExtension("${id}")'>✓</button> <button class='btn btn-ghost btn-xs' style='color:var(--red);padding:1px 6px' onclick='rejectTimeExtension("${id}")'>✗</button>`:''}</span>`:''}
+  </div>
+</div>
     <div style='background:var(--bg3);border-radius:var(--r2);padding:10px;margin-bottom:12px;text-align:center'>
       <div style='font-size:10px;color:var(--text3);margin-bottom:4px'>Total time logged</div>
       <div class='${isRunning?"btv":""}' style='font-family:var(--mono);font-size:28px;font-weight:600;color:var(--accent)'>${fmtTimer(sec)}</div>
@@ -9796,6 +9932,22 @@ function taskDetailHTML(data){
       </div>
     </div>
     <div style='font-size:11px;font-weight:600;color:var(--text3);margin-bottom:5px'>Time Entries (${entries.length})</div>
+    ${(()=>{
+      // User-wise summary
+      const byUser={};
+      entries.forEach(e=>{const u=getUser(e.userId);const nm=u?shortName(u.name):'Unknown';byUser[nm]=(byUser[nm]||0)+(e.seconds||0);});
+      const pairs=Object.entries(byUser).sort((a,b)=>b[1]-a[1]);
+      if(pairs.length<=1) return '';
+      return '<div style="background:var(--bg3);border-radius:var(--r);padding:6px 8px;margin-bottom:8px;font-size:11px">'
+        +'<div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Time by person</div>'
+        +pairs.map(([name,sec])=>
+          '<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border)">'
+          +'<span style="color:var(--text2)">'+name+'</span>'
+          +'<span style="font-family:var(--mono);color:var(--accent);font-weight:600">'+fmtSec(sec)+'</span>'
+          +'</div>'
+        ).join('')
+        +'</div>';
+    })()}
     <div style='max-height:250px;overflow-y:auto;margin-bottom:14px'>
       ${entries.length?entries.map(e=>{
         const eu=getUser(e.userId);
@@ -10142,6 +10294,19 @@ async function addManualTime(){
   if(!taskId){toast('Select a task');return}if(seconds<=0){toast('Enter > 0');return}
   const date=document.getElementById('mt-date')?.value||today(),note=document.getElementById('mt-note')?.value||'Manual';
   const userId=document.getElementById('mt-user')?.value||currentUser.id;
+  // Budget gate
+  const bGate=checkBudgetGate(taskId,seconds);
+  if(bGate?.blocked){
+    toast('⛔ '+bGate.reason);
+    const t2=TASKS.find(x=>x.id===taskId);
+    if(!t2?.timeExtensionRequest||t2.timeExtensionRequest.status==='rejected'){
+      if(confirm('Request time extension from admin?')){
+        requestTimeExtension(taskId,bGate.totalLogged,bGate.budget);
+        closeModal();
+      }
+    }
+    return;
+  }
   const eid=uid();await fbSet('time_entries/'+eid,{id:eid,taskId,userId,date,seconds,note});
   const task=TASKS.find(t=>t.id===taskId);if(task)await fbUpd('tasks/'+taskId,{seconds:(task.seconds||0)+seconds});
   closeModal();toast(`Added ${h}h ${m}m`);

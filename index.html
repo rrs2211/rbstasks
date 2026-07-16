@@ -5221,6 +5221,33 @@ function checkBudgetGate(taskId,newSecs){
   return {blocked:true,reason:'Time limit reached ( '+(t.budgetSeconds/3600).toFixed(1)+'h, logged: '+(alreadyLogged/3600).toFixed(1)+'h). You have reached the limit. Request an extension.',totalLogged:alreadyLogged,budget:t.budgetSeconds};
 }
 
+
+// ─── Overdue / Due-Today Time Gate ──────────────────────────────────────────
+function checkTimePendingGate(excludeTaskId){
+  // Superadmin always exempt
+  if(currentUser.role==='superadmin') return null;
+  const td=today();
+  const blocking=TASKS.filter(function(t){
+    if(isTaskTerminal(t)) return false;
+    if(t.id===excludeTaskId) return false; // the task being timed is exempt
+    // must be assigned to current user
+    if(!taskAssignees(t).some(function(a){return a.id===currentUser.id;})) return false;
+    // overdue OR due today (start<=today<=dueDate, i.e. active today)
+    if(!t.dueDate) return false;
+    const start=t.startDate||t.dueDate;
+    const isOverdue=t.dueDate<td;
+    const isDueToday=start<=td&&t.dueDate>=td;
+    return isOverdue||isDueToday;
+  });
+  if(!blocking.length) return null;
+  const overdue=blocking.filter(function(t){return t.dueDate<td;});
+  const dueToday=blocking.filter(function(t){return t.dueDate>=td;});
+  var lines=[];
+  if(overdue.length) lines.push('Overdue ('+overdue.length+'): '+overdue.slice(0,3).map(function(t){return t.title;}).join(', ')+(overdue.length>3?' …':''));
+  if(dueToday.length) lines.push('Due today ('+dueToday.length+'): '+dueToday.slice(0,3).map(function(t){return t.title;}).join(', ')+(dueToday.length>3?' …':''));
+  return '⛔ Complete or reschedule your pending tasks first:\n'+lines.join('\n');
+}
+
 // ═══════════════════════════════════════
 //  BIND ALL
 // ═══════════════════════════════════════
@@ -5840,21 +5867,25 @@ function firstOfMonth(){const d=new Date();return`${d.getFullYear()}-${String(d.
 
 // Timer
 async function startTimer(taskId){
-  // Block timer if user has overdue tasks (employees and managers only)
-  if(currentUser.role!=='superadmin'){
-    const myOverdueTasks=TASKS.filter(t=>
-      !isTaskTerminal(t) &&
-      taskAssignees(t).some(a=>a.id===currentUser.id) &&
-      dueStatus(t.dueDate,t.startDate)==='overdue' &&
-      t.id!==taskId
-    );
-    if(myOverdueTasks.length>0){
-      toast('⚠ You have '+myOverdueTasks.length+' overdue task'+(myOverdueTasks.length>1?'s':'')+'. Please close or update them before starting the timer.');
-      return;
-    }
+  const gateMsg=checkTimePendingGate(taskId);
+  if(gateMsg){toast(gateMsg);return;}
+  if(activeTimer)await stopTimer();
+  const uid=currentUser.id;
+  await fbSet('active_timers/'+uid,{taskId,userId:uid,startEpoch:Date.now()});
+}
+async function stopTimer(){
+  if(!activeTimer)return;
+  const elapsed=Math.floor((Date.now()-activeTimer.startEpoch)/1000);
+  // Gate check: block stop-and-save if pending tasks (but don't block stopping entirely)
+  const gateMsg=checkTimePendingGate(activeTimer.taskId);
+  if(gateMsg){
+    if(!confirm(gateMsg+'\n\nStop timer without saving the entry?')){return;}
+    // User chose to stop without saving
+    const uid=currentUser.id;
+    await fbDel('active_timers/'+uid);
+    toast('Timer stopped (entry not saved — pending tasks must be resolved first)');
+    render();return;
   }
-if(activeTimer)await stopTimer();const uid=currentUser.id;await fbSet('active_timers/'+uid,{taskId,userId:uid,startEpoch:Date.now()})}
-async function stopTimer(){if(!activeTimer)return;const elapsed=Math.floor((Date.now()-activeTimer.startEpoch)/1000);
   // Time cap check on stop
   if(currentUser.role==='employee'&&elapsed>0){
     const now=new Date();const workStart=new Date();workStart.setHours(9,30,0,0);
@@ -10260,19 +10291,9 @@ function manualTimeHTML({taskId}){
   <button class="btn btn-primary w-full" onclick="addManualTime()">Add Entry</button>`;
 }
 async function addManualTime(){
-  // Block time entry if user has overdue tasks (employees only)
-  if(currentUser.role==='employee'){
-    const myOverdueTasks=TASKS.filter(t=>
-      !isTaskTerminal(t) &&
-      taskAssignees(t).some(a=>a.id===currentUser.id) &&
-      dueStatus(t.dueDate,t.startDate)==='overdue'
-    );
-    if(myOverdueTasks.length>0){
-      toast('⚠ You have '+myOverdueTasks.length+' overdue task'+(myOverdueTasks.length>1?'s':'')+'. Please close or update them before logging time.');
-      closeModal();
-      return;
-    }
-  }
+  // Block time entry if user has overdue or due-today tasks (all non-superadmin)
+  const gateMsg=checkTimePendingGate(null);
+  if(gateMsg){toast(gateMsg);closeModal();return;}
 
   // Time cap: total logged today cannot exceed hours elapsed since 9:30am
   if(currentUser.role==='employee'){

@@ -5236,7 +5236,7 @@ function checkTimePendingGate(excludeTaskId){
     if(!t.dueDate) return false;
     const start=t.startDate||t.dueDate;
     const isOverdue=t.dueDate<td;
-    const isDueToday=start<=td&&t.dueDate>=td;
+    const isDueToday=t.dueDate===td;
     return isOverdue||isDueToday;
   });
   if(!blocking.length) return null;

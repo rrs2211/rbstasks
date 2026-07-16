@@ -5125,18 +5125,20 @@ async function saveDscBulkEdit(){
 
 
 // ─── Billing Invoice Modal ────────────────────────────────────────────────
+let _pendingInvoiceTaskIds=[];
 function billingInvoiceHTML(data){
   const taskIds=data?.taskIds||[];
+  _pendingInvoiceTaskIds=taskIds; // store globally — safe from attribute quoting
   const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
   if(!tasks.length) return mHdr('Invoice')+'<p style="padding:12px">No tasks selected.</p>';
   const totalAmt=tasks.reduce((a,t)=>a+(t.billingAmount||0),0);
-  const totalSec=tasks.reduce((a,t)=>a+(t.seconds||TIME_ENTRIES.filter(e=>e.taskId===t.id).reduce((s,e)=>s+(e.seconds||0),0)||0),0);
   const multiTask=tasks.length>1;
-  return `${mHdr((multiTask?'Merge & ':'')+'Invoice '+(multiTask?tasks.length+' Tasks':tasks[0].title))}
+  return `${mHdr((multiTask?'Merge & ':'')+'Invoice '+(multiTask?tasks.length+' Tasks':escHtml(tasks[0].title||'')))}
   ${multiTask?`<div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:10px;max-height:140px;overflow-y:auto">`
     +tasks.map(t=>`<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)">`
-      +`<span style="color:var(--accent);font-family:var(--mono)">${t.status}</span> ${escHtml(t.title||'')} `
-      +`<span style="color:var(--text3)">${getClient(t.clientId)?.name||''}</span></div>`).join('')
+      +`<span style="color:var(--accent);font-family:var(--mono)">${escHtml(t.status||'')}</span> `
+      +escHtml(t.title||'')+' '
+      +`<span style="color:var(--text3)">${escHtml(getClient(t.clientId)?.name||'')}</span></div>`).join('')
     +'</div>':''}
   <div class="g2" style="margin-bottom:10px">
     <div class="form-row"><label class="form-label">Invoice Number *</label>
@@ -5149,14 +5151,15 @@ function billingInvoiceHTML(data){
   <div class="form-row" style="margin-bottom:10px"><label class="form-label">Amount (₹)</label>
     <input class="form-input" type="number" id="inv-amount" value="${totalAmt||''}" placeholder="Billing amount"/>
   </div>
-  ${multiTask?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">⚠ These ${tasks.length} tasks will be merged under one invoice number. Individual tasks will be marked as invoiced.</div>`:''}
+  ${multiTask?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">⚠ These ${tasks.length} tasks will be merged under one invoice number.</div>`:''}
   <div style="display:flex;gap:8px">
-    <button class="btn btn-primary" style="flex:1" onclick="saveBillingInvoice(${JSON.stringify(taskIds)})">✓ ${multiTask?'Merge & ':''} Mark as Invoiced</button>
+    <button class="btn btn-primary" style="flex:1" onclick="saveBillingInvoice()">✓ ${multiTask?'Merge & ':''}Mark as Invoiced</button>
     <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
   </div>`;
 }
 
-async function saveBillingInvoice(taskIds){
+async function saveBillingInvoice(){
+  const taskIds=_pendingInvoiceTaskIds||[];
   const invNo=(document.getElementById('inv-number')?.value||'').trim();
   const invDate=document.getElementById('inv-date')?.value||today();
   const invAmt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;

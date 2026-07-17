@@ -678,7 +678,7 @@ let curPage='dashboard',curTab=0,modalState=null;
 let syncStatus='syncing',searchQuery='',searchOpen=false;
 let darkMode=LS.get('darkMode',true);
 // Multi-select filters (arrays of selected values, empty = all)
-let taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',firm:'all',search:''};
+let taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',exactDate:'',firm:'all',search:''};
 let collapsedGroups=new Set(); // tracks which group keys are collapsed
 
 // ── Chat Hub state ──────────────────────────────────────
@@ -5186,17 +5186,33 @@ async function saveBudgetTime(taskId){
   toast(secs?'Budget set to '+hrs+'h':'Budget cleared — unlimited time allowed');
   render();
 }
-async function requestTimeExtension(taskId,totalLogged,budget){
+async function requestTimeExtension(taskId,totalLogged,budget,pendingEntry){
   const t=TASKS.find(x=>x.id===taskId);
-  const reason=prompt('Briefly explain why additional time is needed:');
+  const reason=prompt('Briefly explain why additional time is needed (for admin review):');
   if(!reason)return;
-  await fbUpd('tasks/'+taskId,{timeExtensionRequest:{status:'pending',requestedBy:currentUser.id,requestedAt:today(),totalLogged,budget,reason}});
+  const req={status:'pending',requestedBy:currentUser.id,requestedAt:today(),
+    totalLogged,budget,reason,
+    pendingEntry:pendingEntry||null}; // store the pending time entry for auto-save on approval
+  await fbUpd('tasks/'+taskId,{timeExtensionRequest:req});
   toast('Time extension request submitted — awaiting admin approval');
   render();
 }
 async function approveTimeExtension(taskId){
+  const t=TASKS.find(x=>x.id===taskId);
+  const req=t?.timeExtensionRequest||{};
+  // Auto-save the pending time entry if stored
+  if(req.pendingEntry&&req.pendingEntry.seconds>0){
+    const pe=req.pendingEntry;
+    const eid=uid();
+    await fbSet('time_entries/'+eid,{id:eid,taskId:pe.taskId,userId:pe.userId,
+      date:pe.date||today(),seconds:pe.seconds,note:(pe.note||'Manual')});
+    await fbUpd('tasks/'+taskId,{seconds:(t.seconds||0)+pe.seconds});
+    toast('✓ Time extension approved — '+fmtSec(pe.seconds)+' entry auto-saved for '+
+      (getUser(pe.userId)?.name||'user'));
+  } else {
+    toast('Time extension approved');
+  }
   await fbUpd('tasks/'+taskId,{timeExtensionRequest:{status:'approved',approvedBy:currentUser.id,approvedAt:today()}});
-  toast('Time extension approved');
   render();
 }
 async function rejectTimeExtension(taskId){
@@ -5235,9 +5251,8 @@ function checkTimePendingGate(excludeTaskId){
     // overdue OR due today (start<=today<=dueDate, i.e. active today)
     if(!t.dueDate) return false;
     const start=t.startDate||t.dueDate;
-    const isOverdue=t.dueDate<td;
-    const isDueToday=t.dueDate===td;
-    return isOverdue||isDueToday;
+    const isOverdue=t.dueDate<td&&t.dueDate!==td; // only yesterday or before, not today
+    return isOverdue;
   });
   if(!blocking.length) return null;
   const overdue=blocking.filter(function(t){return t.dueDate<td;});
@@ -6870,6 +6885,7 @@ function tasksPage(){
   if(taskFilter.subdepts&&taskFilter.subdepts.length)tasks=tasks.filter(t=>taskFilter.subdepts.includes(t.subDeptId));
   if(taskFilter.assignees&&taskFilter.assignees.length)tasks=tasks.filter(t=>taskFilter.assignees.some(a=>isAssignedTo(t,a)));
   if(taskFilter.firm&&taskFilter.firm!=='all')tasks=tasks.filter(t=>t.firmId===taskFilter.firm);
+  if(taskFilter.exactDate)tasks=tasks.filter(t=>t.dueDate===taskFilter.exactDate);
   if(taskFilter.due==='overdue')tasks=tasks.filter(t=>dueStatus(t.dueDate,t.startDate)==='overdue'&&!isTaskTerminal(t));
   if(taskFilter.due==='week'){const w=new Date();w.setDate(w.getDate()+7);tasks=tasks.filter(t=>t.dueDate&&t.dueDate<=w.toISOString().slice(0,10)&&!isTaskTerminal(t))}
   if(taskFilter.due==='nodue')tasks=tasks.filter(t=>!t.dueDate&&!isTaskTerminal(t));
@@ -6877,7 +6893,7 @@ function tasksPage(){
   const pendingAppr=myTasks().filter(t=>t.approvalStatus==='pending');
   const udinNeeded=myTasks().filter(t=>requiresUDIN(t)&&isTaskTerminal(t)&&!hasValidUDIN(t));
   const certTasks=myTasks().filter(t=>t.isCertificate);
-  const hasFilter=!!(taskFilter.search||taskFilter.depts.length||taskFilter.subdepts?.length||taskFilter.clients.length||taskFilter.priorities.length||taskFilter.statuses.length||taskFilter.assignees.length||(taskFilter.due&&taskFilter.due!=='all'));
+  const hasFilter=!!(taskFilter.search||taskFilter.depts.length||taskFilter.subdepts?.length||taskFilter.clients.length||taskFilter.priorities.length||taskFilter.statuses.length||taskFilter.assignees.length||(taskFilter.due&&taskFilter.due!=='all')||taskFilter.exactDate);
   return`<div class="flex-between mb-12">
     <div class="page-title">Tasks</div>
     <div style="display:flex;gap:7px;align-items:center">
@@ -6916,7 +6932,8 @@ function tasksPage(){
           <option value="overdue"${taskFilter.due==='overdue'?' selected':''}>⚠ Overdue</option>
           <option value="week"${taskFilter.due==='week'?' selected':''}>📅 This Week</option>
           <option value="nodue"${taskFilter.due==='nodue'?' selected':''}>⭕ No Due Date</option>
-        </select>`
+        </select>
+        <input type="date" class="form-input" title="Filter by exact due date" style="height:32px;font-size:12px;padding:0 8px;width:140px" value="${taskFilter.exactDate||''}" onchange="taskFilter.exactDate=this.value||'';;taskFilter.due='all';curTab=0;render()"/>`
       +(hasFilter?`<button class="btn btn-danger btn-sm" onclick="taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',firm:'all'};curTab=0;render()">✕ Clear</button>`:'');
     })()}
   </div>
@@ -9901,7 +9918,7 @@ function taskDetailHTML(data){
   ${isAdminOrMgr?`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:12px;margin-bottom:10px">
     <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Dates</div>
     <div class="g2">
-      <div class="form-row" style="margin-bottom:0"><label class="form-label">Start Date</label><input class="form-input" type="date" id="edit-start" value="${t.startDate||''}"/></div>
+      <div class="form-row" style="margin-bottom:0"><label class="form-label">Start Date</label><input class="form-input" type="date" id="edit-start" value="${t.startDate||today()}"/></div>
       <div class="form-row" style="margin-bottom:0"><label class="form-label">Due Date</label><input class="form-input" type="date" id="edit-due" value="${t.dueDate||''}"/>
         ${(()=>{const c=t.dueDateChanges||0;if(!c)return '';const lim=t.priority==='high'?1:3;const locked=c>=lim&&currentUser.role!=='superadmin';return '<div style="font-size:10px;margin-top:3px;color:'+(locked?'var(--red)':'var(--amber)')+'">'+(locked?'🔒 Locked (Super Admin only)':'⚠ Changed '+c+'× of '+lim+' allowed')+'</div>';})()}
       </div>
@@ -9912,8 +9929,14 @@ function taskDetailHTML(data){
   <!-- ── SECTION 5: Assignees (admin/manager only) ── -->
   ${isAdminOrMgr?`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:12px;margin-bottom:10px">
     <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Assignees</div>
-    <div style="max-height:130px;overflow-y:auto">
-      ${USERS.filter(u=>u.role!=='').map(u=>`<label style="display:flex;align-items:center;gap:7px;padding:4px;cursor:pointer">
+    <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+      <input class="form-input" id="asgn-search-${id}" placeholder="Search staff…" style="flex:1;font-size:11px;height:28px;padding:0 8px"
+        oninput="(function(){var q=this.value.toLowerCase();document.querySelectorAll('#asgn-list-${id} label').forEach(function(l){l.style.display=l.textContent.toLowerCase().includes(q)?'':'none';});}).call(this)"/>
+      <button class="btn btn-ghost btn-xs" style="height:28px;white-space:nowrap"
+        onclick="document.querySelectorAll('#asgn-list-${id} .edit-assignee-cb').forEach(function(cb){cb.checked=false;})">✕ Clear</button>
+    </div>
+    <div id="asgn-list-${id}" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r);padding:2px">
+      ${USERS.filter(u=>u.role!=='').map(u=>`<label style="display:flex;align-items:center;gap:7px;padding:5px 7px;cursor:pointer;border-radius:var(--r)">
         <input type="checkbox" class="edit-assignee-cb" value="${u.id}"${isAssignedTo(t,u.id)?' checked':''}/>
         <div class="avatar ${avClass(u.id)}" style="width:20px;height:20px;font-size:8px">${initials(u.name)}</div>
         <span style="font-size:12px">${u.name}</span>
@@ -10326,8 +10349,8 @@ async function addManualTime(){
     toast('⛔ '+bGate.reason);
     const t2=TASKS.find(x=>x.id===taskId);
     if(!t2?.timeExtensionRequest||t2.timeExtensionRequest.status==='rejected'){
-      if(confirm('Request time extension from admin?')){
-        requestTimeExtension(taskId,bGate.totalLogged,bGate.budget);
+      if(confirm('Request time extension from admin?\nYour entry of '+h+'h '+m+'m will be saved automatically when approved.')){
+        requestTimeExtension(taskId,bGate.totalLogged,bGate.budget,{taskId,userId,date,seconds,note});
         closeModal();
       }
     }
@@ -10355,6 +10378,9 @@ function newUserHTML(){
   <div class="g2">
     <div class="form-row"><label class="form-label">Email * <span style="font-size:10px;color:var(--text3)">(used to login)</span></label><input class="form-input" type="email" id="uf-email" placeholder="name@rbshah.in"/></div>
     <div class="form-row"><label class="form-label">Username <span style="font-size:10px;color:var(--text3)">(optional login alias)</span></label><input class="form-input" id="uf-username" placeholder="e.g. janvi.davda"/></div>
+  </div>
+  <div class="form-row"><label class="form-label">Mobile / WhatsApp <span style="font-size:10px;color:var(--text3)">(10-digit number)</span></label>
+    <input class="form-input" type="tel" id="uf-mobile" placeholder="e.g. 9876543210" maxlength="15"/>
   </div>
   <div class="g2">
     <div class="form-row"><label class="form-label">Password * <span style="font-size:10px;color:var(--text3)">(min 6 chars)</span></label><input class="form-input" type="password" id="uf-password" placeholder="Set initial password" autocomplete="new-password"/></div>
@@ -10423,6 +10449,7 @@ function editUserHTML({id}){
   </div>
   <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="uf-name" value="${u.name}"/></div>
   <div class="form-row"><label class="form-label">Email</label><input class="form-input" type="email" id="uf-email" value="${u.email||''}"/></div>
+  <div class="form-row"><label class="form-label">Mobile / WhatsApp</label><input class="form-input" type="tel" id="uf-mobile" value="${u.mobile||u.whatsapp||''}" placeholder="e.g. 9876543210" maxlength="15"/></div>
   <div class="g2">
     <div class="form-row"><label class="form-label">Role</label><select class="form-select" id="uf-role"><option value="employee"${u.role==='employee'?' selected':''}>Staff</option><option value="manager"${u.role==='manager'?' selected':''}>Manager</option><option value="superadmin"${u.role==='superadmin'?' selected':''}>Super Admin</option></select></div>
     <div class="form-row"><label class="form-label">Departments</label><div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:7px;max-height:90px;overflow-y:auto">${DEPTS.map(d=>`<label style="display:flex;align-items:center;gap:6px;padding:2px;cursor:pointer"><input type="checkbox" class="uf-dept-cb" value="${d.id}"${(Array.isArray(u.deptIds)?u.deptIds:u.deptId?[u.deptId]:[]).includes(d.id)?' checked':''}><span style="font-size:12px">${d.name}</span></label>`).join('')}</div><div style="font-size:10px;color:var(--text3);margin-top:3px">Select one or more departments</div></div>
@@ -10692,9 +10719,12 @@ function editClientHTML({id}){
     +'<input class="form-input" id="cf-name" value="'+c.name.replace(/"/g,'&quot;')+'"/></div>';
   html+='<div class="form-row"><label class="form-label">GSTIN</label>'
     +'<input class="form-input" id="cf-gstin" value="'+(c.gstin||'')+'" maxlength="15" oninput="this.value=this.value.toUpperCase()" /></div>';
-  html+='<div class="form-row"><label class="form-label">WhatsApp / Phone Numbers'
-    +'<span style="font-size:10px;color:var(--text3);margin-left:5px">(one per line)</span></label>'
+  html+='<div class="g2">';
+  html+='<div class="form-row"><label class="form-label">Primary WhatsApp / Mobile</label>'
+    +'<input class="form-input" type="tel" id="cf-primary-mobile" value="'+(c.primaryMobile||'').replace(/"/g,'&quot;')+'" placeholder="Primary number for WhatsApp"/></div>';
+  html+='<div class="form-row"><label class="form-label">All Phone Numbers <span style="font-size:10px;color:var(--text3)">(one per line)</span></label>'
     +'<textarea class="form-textarea" id="cf-phones" rows="2">'+phones+'</textarea></div>';
+  html+='</div>';
   html+='<div class="form-row"><label class="form-label">Email IDs'
     +'<span style="font-size:10px;color:var(--text3);margin-left:5px">(one per line)</span></label>'
     +'<textarea class="form-textarea" id="cf-emails" rows="2">'+emails+'</textarea></div>';

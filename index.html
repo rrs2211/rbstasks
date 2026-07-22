@@ -153,7 +153,7 @@ body{background:var(--bg);color:var(--text);overflow-x:hidden;font-family:var(--
 .modal.modal-wide .modal-cols{display:grid;grid-template-columns:1fr 1fr;gap:0;height:calc(90vh - 80px);}
 .modal.modal-wide .modal-col-left{overflow-y:auto;padding-right:16px;border-right:1px solid var(--border);}
 .modal.modal-wide .modal-col-right{overflow-y:auto;padding-left:16px;}
-@media(max-width:800px){.modal.modal-wide{max-width:100%;}.modal.modal-wide .modal-cols{grid-template-columns:1fr;height:auto;}}
+@media(max-width:800px){.modal.modal-wide{max-width:100%;border-radius:0;}.modal.modal-wide .modal-cols{grid-template-columns:1fr;height:auto;}.modal.modal-wide .modal-col-left,.modal.modal-wide .modal-col-right{overflow-y:visible;border-right:none;padding-right:0;padding-left:0;}}
 
 .modal-overlay.open .modal{transform:translateY(0)}
 .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -927,6 +927,8 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     TASK_DEPS=s.val()||{};
   });
   db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
+  db.ref('leaves').on('value',s=>{LEAVES=s.val()?Object.values(s.val()):[];render();});
+  db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];});
   db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
   db.ref('dsc_records').on('value',s=>{
     DSC_RECORDS=objToArr(s.val()||{});
@@ -4612,7 +4614,16 @@ async function sendMorningDigest(ds){
     var mt=active.filter(function(t){return isAssignedTo(t,u.id);});
     if(!mt.length)return;
     var body=['Good morning '+u.name+',','','Your tasks for today:',''];
-    mt.forEach(function(t){body.push('* '+t.title+' ('+t.status+')'+(t.dueDate===todayStr?' - DUE TODAY':''));});
+    var priOrder={urgent:0,high:1,medium:2,low:3};
+    mt.sort(function(a,b){
+      var dA=a.dueDate===todayStr?0:1, dB=b.dueDate===todayStr?0:1;
+      if(dA!==dB) return dA-dB;
+      return (priOrder[a.priority]||2)-(priOrder[b.priority]||2);
+    });
+    mt.forEach(function(t){
+      var pri=t.priority==='urgent'?'🔴':t.priority==='high'?'🟠':t.priority==='medium'?'🟡':'🟢';
+      body.push(pri+' '+t.title+' ('+t.status+')'+(t.dueDate===todayStr?' ← DUE TODAY':''));
+    });
     body=body.concat(['','Have a productive day!',firm]);
     await sendEmail(u.email,'Your Tasks for Today - '+fmtDate(todayStr),body.join('\n'));
   });
@@ -4633,6 +4644,27 @@ async function sendMorningDigest(ds){
   body.push('\n'+firm);
   var adminEmails=admins.filter(function(a){return a.active!==false&&a.email;}).map(function(a){return a.email;});
   if(adminEmails.length)await sendEmailBCC(adminEmails,'[Company] Morning Task Summary - '+fmtDate(todayStr),body.join('\n'));
+  // Auto-notify staff with no time entries yesterday
+  var yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);var yStr=yesterday.toISOString().slice(0,10);var yDay=yesterday.getDay();
+  if(yDay>=1&&yDay<=5){var noEntryYest=USERS.filter(function(u){if(!u.email||u.active===false||u.role==='superadmin')return false;return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});});noEntryYest.forEach(async function(u){await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),'Hi '+u.name+',\n\nWe noticed no time entries on '+fmtDate(yStr)+'. Please log your work in TaskHub.\n\nRegards,\n'+firm);});if(noEntryYest.length&&adminEmails.length)await sendEmailBCC(adminEmails,'[Attendance] No entries - '+fmtDate(yStr),noEntryYest.length+' staff had no entries:\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));}
+  // Auto-email: notify staff who have not logged any time yesterday (if it's a weekday)
+  var yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
+  var yStr=yesterday.toISOString().slice(0,10);
+  var yDay=yesterday.getDay();
+  if(yDay>=1&&yDay<=5){ // only Mon-Fri
+    var noEntryYest=USERS.filter(function(u){
+      if(!u.email||u.active===false||u.role==='superadmin') return false;
+      return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});
+    });
+    noEntryYest.forEach(async function(u){
+      await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),
+        'Hi '+u.name+',\n\nWe noticed you did not log any time entries on '+fmtDate(yStr)+'.\n\nPlease log your work by updating time entries in TaskHub.\n\nRegards,\n'+firm);
+    });
+    if(noEntryYest.length&&adminEmails.length){
+      await sendEmailBCC(adminEmails,'[Attendance] Staff with no entries - '+fmtDate(yStr),
+        noEntryYest.length+' staff had no time entries on '+fmtDate(yStr)+':\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));
+    }
+  }
 }
 
 // Rules 7,10,11: Evening digest
@@ -5242,6 +5274,8 @@ function checkBudgetGate(taskId,newSecs){
 function checkTimePendingGate(excludeTaskId){
   // Superadmin always exempt
   if(currentUser.role==='superadmin') return null;
+  // Block if on approved leave today
+  if(myLeaveToday()) return '🏖 You are on approved leave today. Time entry is not allowed on leave days.';
   const td=today();
   const blocking=TASKS.filter(function(t){
     if(isTaskTerminal(t)) return false;
@@ -5261,6 +5295,288 @@ function checkTimePendingGate(excludeTaskId){
   if(overdue.length) lines.push('Overdue ('+overdue.length+'): '+overdue.slice(0,3).map(function(t){return t.title;}).join(', ')+(overdue.length>3?' …':''));
   if(dueToday.length) lines.push('Due today ('+dueToday.length+'): '+dueToday.slice(0,3).map(function(t){return t.title;}).join(', ')+(dueToday.length>3?' …':''));
   return '⛔ Complete or reschedule your pending tasks first:\n'+lines.join('\n');
+}
+
+
+// ─── SLA Tracking ────────────────────────────────────────────────────────
+function slaDays(t){
+  // Returns {target, actual, overrun, pct} for completed tasks, or {target, elapsed, overrun, pct} for active
+  if(!t.startDate||!t.dueDate) return null;
+  const start=new Date(t.startDate+'T00:00:00');
+  const due=new Date(t.dueDate+'T00:00:00');
+  const target=Math.max(1,Math.round((due-start)/86400000));
+  if(isTaskTerminal(t)&&t.completedAt){
+    const done=new Date(t.completedAt+'T00:00:00');
+    const actual=Math.round((done-start)/86400000);
+    return {target,actual,overrun:actual-target,met:actual<=target};
+  }
+  const elapsed=Math.round((new Date()-start)/86400000);
+  return {target,elapsed,overrun:elapsed-target,met:elapsed<=target};
+}
+function slaTag(t){
+  const s=slaDays(t);if(!s)return '';
+  if(isTaskTerminal(t)){
+    return s.met
+      ?'<span style="font-size:9px;background:rgba(74,222,128,.12);color:var(--green,#4ade80);padding:1px 5px;border-radius:99px">✓ SLA</span>'
+      :'<span style="font-size:9px;background:rgba(239,68,68,.12);color:var(--red);padding:1px 5px;border-radius:99px">+'+s.overrun+'d late</span>';
+  }
+  return s.overrun>0
+    ?'<span style="font-size:9px;background:rgba(239,68,68,.12);color:var(--red);padding:1px 5px;border-radius:99px">'+s.overrun+'d over</span>'
+    :'<span style="font-size:9px;color:var(--text3);font-size:9px">'+Math.max(0,-s.overrun)+'d left</span>';
+}
+
+
+function weeklyTimesheetTab(){
+  if(!window._tsWeek) window._tsWeek=today();
+  // Find Mon of selected week
+  var d=new Date(window._tsWeek+'T00:00:00');
+  var dow=d.getDay();var diff=dow===0?-6:1-dow;
+  var mon=new Date(d);mon.setDate(d.getDate()+diff);
+  var days=[];for(var i=0;i<7;i++){var dd=new Date(mon);dd.setDate(mon.getDate()+i);days.push(dd.toISOString().slice(0,10));}
+  var role=currentUser.role,isAdmin=role==='superadmin'||role==='manager';
+  var staff=isAdmin
+    ?(role==='superadmin'?USERS.filter(function(u){return u.active!==false&&u.role!=='superadmin';}):USERS.filter(function(u){var d2=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return u.active!==false&&d2.some(function(id){return (currentUser.deptIds||[currentUser.deptId]).includes(id);});}))
+    :[currentUser];
+  var weekLabel=days[0]+' → '+days[6];
+  var rows=staff.map(function(u){
+    var cells=days.map(function(day){
+      var secs=TIME_ENTRIES.filter(function(e){return e.userId===u.id&&e.date===day;}).reduce(function(a,e){return a+(e.seconds||0);},0);
+      var isOff=new Date(day+'T00:00:00').getDay()%6===0;
+      var color=secs===0?(isOff?'var(--bg3)':'rgba(239,68,68,.1)'):(secs>=28800?'rgba(74,222,128,.12)':'rgba(245,158,11,.1)');
+      var text=secs===0?(isOff?'—':'<span style="color:var(--red);font-size:10px">—</span>'):('<span style="color:var(--accent);font-family:var(--mono);font-size:11px">'+fmtSec(secs)+'</span>');
+      return '<td style="padding:5px 4px;text-align:center;border:1px solid var(--border);background:'+color+'">'+text+'</td>';
+    });
+    var total=TIME_ENTRIES.filter(function(e){return e.userId===u.id&&days.includes(e.date);}).reduce(function(a,e){return a+(e.seconds||0);},0);
+    return '<tr><td style="padding:5px 8px;border:1px solid var(--border);white-space:nowrap;font-size:12px">'+u.name+'</td>'+cells.join('')+'<td style="padding:5px 8px;text-align:right;border:1px solid var(--border);font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent)">'+fmtSec(total)+'</td></tr>';
+  }).join('');
+  var dayHeaders=days.map(function(d2){var dt=new Date(d2+'T00:00:00');var lbl=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dt.getDay()];var isOff=dt.getDay()%6===0;return '<th style="padding:5px 6px;text-align:center;border:1px solid var(--border);font-size:10px;white-space:nowrap;color:'+(isOff?'var(--text3)':'var(--text2)')+'">'+lbl+'<br>'+d2.slice(5)+'</th>';}).join('');
+  return '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
+    +'<div style="font-size:14px;font-weight:700">Weekly Timesheet</div>'
+    +'<input type="week" class="form-input" style="width:180px;height:32px;font-size:12px;padding:0 8px" value="'+days[0].slice(0,4)+'-W'+String(Math.ceil((new Date(days[0]+'T00:00:00')-new Date(days[0].slice(0,4)+'-01-01T00:00:00'))/604800000+1)).padStart(2,'0')+'" onchange="(function(v){var parts=v.split(\'-W\');var jan4=new Date(parts[0],0,4);var weekStart=new Date(jan4.getTime()-((jan4.getDay()||7)-1)*86400000+(parseInt(parts[1])-1)*7*86400000);window._tsWeek=weekStart.toISOString().slice(0,10);render();})(this.value)"/>'
+    +'<div style="font-size:12px;color:var(--text3)">'+weekLabel+'</div>'
+    +'</div>'
+    +'<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:600px">'
+    +'<thead><tr><th style="padding:5px 8px;border:1px solid var(--border);text-align:left;font-size:11px">Staff</th>'+dayHeaders+'<th style="padding:5px 8px;border:1px solid var(--border);font-size:11px;text-align:right">Total</th></tr></thead>'
+    +'<tbody>'+rows+'</tbody></table></div>';
+}
+
+function billingByClientTab(){
+  if(!window._bcMonth) window._bcMonth=today().slice(0,7);
+  var selMon=window._bcMonth;
+  // Group invoiced tasks by client for selected month
+  var invoicedTasks=TASKS.filter(function(t){
+    return t.billingStatus==='invoiced'&&t.invoiceDate&&t.invoiceDate.slice(0,7)===selMon;
+  });
+  // Also include tasks completed in that month for pending billing
+  var byClient={};
+  var allBillable=TASKS.filter(function(t){return t.billingStatus&&t.billingStatus!=='not_applicable';});
+  allBillable.forEach(function(t){
+    var c=getClient(t.clientId);var cname=(c?c.name:'Other/Unknown');
+    if(!byClient[cname]) byClient[cname]={pending:0,invoiced:0,pendingAmt:0,invoicedAmt:0,tasks:[]};
+    if(t.billingStatus==='invoiced'&&t.invoiceDate&&t.invoiceDate.slice(0,7)===selMon){
+      byClient[cname].invoiced++;byClient[cname].invoicedAmt+=(t.billingAmount||0);
+    } else if(t.billingStatus!=='invoiced'){
+      byClient[cname].pending++;byClient[cname].pendingAmt+=(t.billingAmount||0);
+    }
+    byClient[cname].tasks.push(t);
+  });
+  var rows=Object.entries(byClient).sort(function(a,b){return b[1].invoicedAmt-a[1].invoicedAmt;}).map(function(kv){
+    var name=kv[0],data=kv[1];
+    return '<tr>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px;font-weight:500">'+name+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:center;font-size:12px">'+data.invoiced+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--accent);font-size:12px">'+('₹'+(data.invoicedAmt||0).toLocaleString('en-IN'))+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:center;font-size:12px;color:var(--text3)">'+data.pending+'</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);font-size:12px;color:var(--amber)">'+('₹'+(data.pendingAmt||0).toLocaleString('en-IN'))+'</td>'
+      +'</tr>';
+  }).join('');
+  var totalInv=Object.values(byClient).reduce(function(a,d){return a+d.invoicedAmt;},0);
+  var totalPend=Object.values(byClient).reduce(function(a,d){return a+d.pendingAmt;},0);
+  return '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
+    +'<div style="font-size:14px;font-weight:700">Billing by Client</div>'
+    +'<input type="month" class="form-input" style="width:160px;height:32px;font-size:12px;padding:0 8px" value="'+selMon+'" onchange="window._bcMonth=this.value;render()"/>'
+    +'<div style="font-size:12px">Invoiced: <b style="color:var(--accent)">₹'+totalInv.toLocaleString('en-IN')+'</b> · Pending: <b style="color:var(--amber)">₹'+totalPend.toLocaleString('en-IN')+'</b></div>'
+    +'</div>'
+    +'<table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr style="background:var(--bg3)">'
+    +'<th style="padding:7px 10px;text-align:left;font-size:11px;border-bottom:2px solid var(--border)">Client</th>'
+    +'<th style="padding:7px 10px;text-align:center;font-size:11px;border-bottom:2px solid var(--border)">Invoiced #</th>'
+    +'<th style="padding:7px 10px;text-align:right;font-size:11px;border-bottom:2px solid var(--border)">Invoiced ₹</th>'
+    +'<th style="padding:7px 10px;text-align:center;font-size:11px;border-bottom:2px solid var(--border)">Pending #</th>'
+    +'<th style="padding:7px 10px;text-align:right;font-size:11px;border-bottom:2px solid var(--border)">Pending ₹</th>'
+    +'</tr></thead><tbody>'+rows+'</tbody></table>';
+}
+
+
+// ─── WhatsApp Helper ─────────────────────────────────────────────────────
+function waLink(number,msg){
+  var n=String(number||'').replace(/[^0-9]/g,'');
+  if(!n) return null;
+  if(n.length===10) n='91'+n;
+  return 'https://wa.me/'+n+'?text='+encodeURIComponent(msg||'');
+}
+function waBtn(number,msg,label){
+  var link=waLink(number,msg);
+  if(!link) return '';
+  return '<a href="'+link+'" target="_blank" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:600;text-decoration:none">🟢 '+(label||'WhatsApp')+'</a>';
+}
+function taskWhatsAppMsg(t){
+  var c=getClient(t.clientId);var dept=getDept(t.deptId);
+  return 'Dear '+(c?c.name:'Client')+',\n\nThis is a reminder regarding: *'+t.title+'*'+(dept?' ('+dept.name+')':'')+'.'+'\n\nStatus: '+t.status+(t.dueDate?'\nDue: '+fmtDate(t.dueDate):'')+'\n\nPlease get in touch if you need any clarification.\n\nRegards,\nR B Shah & Associates';
+}
+
+
+// ─── Leave System ────────────────────────────────────────────────────────
+// LEAVES collection: {id, userId, startDate, endDate, type, reason, status:'pending'|'approved'|'rejected', approvedBy}
+function isOnLeave(userId, dateStr){
+  return LEAVES.some(function(l){
+    return l.userId===userId&&l.status==='approved'&&dateStr>=l.startDate&&dateStr<=l.endDate;
+  });
+}
+function myLeaveToday(){
+  var td=today();
+  return LEAVES.find(function(l){return l.userId===currentUser.id&&l.status==='approved'&&td>=l.startDate&&td<=l.endDate;});
+}
+async function applyLeave(){
+  var start=document.getElementById('leave-start')?.value;
+  var end=document.getElementById('leave-end')?.value||start;
+  var type=document.getElementById('leave-type')?.value||'casual';
+  var reason=(document.getElementById('leave-reason')?.value||'').trim();
+  if(!start){toast('Select leave start date');return;}
+  var id=uid();
+  await fbSet('leaves/'+id,{id,userId:currentUser.id,startDate:start,endDate:end,type,reason,status:'pending',appliedAt:today()});
+  toast('Leave application submitted for approval');
+  closeModal();render();
+}
+async function approveLeave(id){
+  await fbUpd('leaves/'+id,{status:'approved',approvedBy:currentUser.id,approvedAt:today()});
+  toast('Leave approved');render();
+}
+async function rejectLeave(id){
+  await fbUpd('leaves/'+id,{status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
+  toast('Leave rejected');render();
+}
+function leaveApplyHTML(){
+  return mHdr('Apply for Leave')
+  +'<div class="g2"><div class="form-row"><label class="form-label">From Date</label><input class="form-input" type="date" id="leave-start" value="'+today()+'"/></div>'
+  +'<div class="form-row"><label class="form-label">To Date</label><input class="form-input" type="date" id="leave-end" value="'+today()+'"/></div></div>'
+  +'<div class="form-row"><label class="form-label">Type</label><select class="form-select" id="leave-type"><option value="casual">Casual Leave</option><option value="sick">Sick Leave</option><option value="half">Half Day</option><option value="other">Other</option></select></div>'
+  +'<div class="form-row"><label class="form-label">Reason <span style="font-size:10px;color:var(--text3)">(optional)</span></label><textarea class="form-textarea" id="leave-reason" rows="2" placeholder="Optional reason"></textarea></div>'
+  +'<button class="btn btn-primary w-full" onclick="applyLeave()">Submit Leave Application</button>';
+}
+
+
+// ─── Client Portal ────────────────────────────────────────────────────────
+function isClientUser(){ return currentUser.role==='client'; }
+
+function clientPortalPage(){
+  const c=CLIENTS.find(cl=>cl.id===currentUser.clientId);
+  if(!c) return '<div style="padding:2rem;color:var(--red)">No client linked to your account. Contact admin.</div>';
+  const tasks=TASKS.filter(t=>t.clientId===c.id&&!isTaskTerminal(t));
+  const done=TASKS.filter(t=>t.clientId===c.id&&isTaskTerminal(t));
+  return`<div class="page-header">
+    <div class="page-title">${c.name} — Task Portal</div>
+    <button class="btn btn-primary btn-sm" onclick="openModal('newTask',{prefillClientId:'${c.id}'})">+ New Task</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
+    <div class="stat-card"><div class="sc-label">Active Tasks</div><div class="sc-val">${tasks.length}</div></div>
+    <div class="stat-card"><div class="sc-label">Completed</div><div class="sc-val">${done.length}</div></div>
+  </div>
+  <div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Active Tasks</div>
+  ${tasks.length?tasks.map(t=>`<div class="card mb-8" style="border-left:3px solid ${statusColor(t.status)}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+      <div>
+        <div style="font-size:13px;font-weight:600">${t.title}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">${getDept(t.deptId)?.name||''} · Due: ${fmtDate(t.dueDate)||'Not set'}</div>
+      </div>
+      <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap">${t.status}</span>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${t.id}'})">View Details / Attach File</button>
+    </div>
+  </div>`).join(''):'<div style="color:var(--text3);font-size:12px;padding:1rem">No active tasks</div>'}
+  ${done.length?`<details><summary style="cursor:pointer;font-size:12px;color:var(--text3);margin-top:12px">▸ ${done.length} completed tasks</summary>
+    ${done.map(t=>`<div class="card mb-4" style="opacity:.7">
+      <div style="font-size:12px;font-weight:500">${t.title}</div>
+      <div style="font-size:10px;color:var(--text3)">${t.status} · ${fmtDate(t.dueDate)||''}</div>
+    </div>`).join('')}
+  </details>`:''}`;
+}
+
+function clientTaskDetailHTML(data){
+  const t=TASKS.find(x=>x.id===data?.id);
+  if(!t)return mHdr('Task')+'<p style="padding:12px">Not found.</p>';
+  const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
+  return`${mHdr(t.title)}
+  <div style="background:var(--bg3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+      <div><span style="color:var(--text3)">Status</span><div style="font-weight:600;color:${statusColor(t.status)}">${t.status}</div></div>
+      <div><span style="color:var(--text3)">Due Date</span><div style="font-weight:600">${fmtDate(t.dueDate)||'Not set'}</div></div>
+      <div><span style="color:var(--text3)">Department</span><div>${getDept(t.deptId)?.name||'—'}</div></div>
+      <div><span style="color:var(--text3)">Priority</span><div>${t.priority||'—'}</div></div>
+    </div>
+  </div>
+  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📎 Documents</div>
+  ${atts.length?atts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
+    <span>📄</span><span style="flex:1">${a.name}</span>
+    <a href="${R2_CFG?R2_CFG.workerUrl+'/download?key='+encodeURIComponent(a.key):'#'}" target="_blank" class="btn btn-ghost btn-xs">⬇ Download</a>
+  </div>`).join(''):'<div style="font-size:11px;color:var(--text3);margin-bottom:10px">No documents yet</div>'}
+  <div style="margin-top:10px">
+    <label class="btn btn-ghost btn-sm" style="cursor:pointer">📎 Upload Document <input type="file" style="display:none" onchange="uploadAttachment('${t.id}',this.files[0])"/></label>
+  </div>`;
+}
+
+
+function showClientSignup(){
+  const d=document.getElementById('login-box')||document.getElementById('login-panel');
+  if(!d) return;
+  d.innerHTML=`<div style="max-width:360px;margin:0 auto;padding:24px">
+    <div style="font-size:18px;font-weight:700;margin-bottom:4px">Client Portal Access</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Sign up to view your tasks. Your request will be sent to admin for approval.</div>
+    <div class="form-row"><label class="form-label">Your Name</label><input class="form-input" id="cs-name" placeholder="Full name"/></div>
+    <div class="form-row"><label class="form-label">Email</label><input class="form-input" type="email" id="cs-email" placeholder="your@email.com"/></div>
+    <div class="form-row"><label class="form-label">Company Name</label><input class="form-input" id="cs-company" placeholder="Your company"/></div>
+    <div class="form-row"><label class="form-label">Mobile</label><input class="form-input" type="tel" id="cs-mobile" placeholder="10-digit number"/></div>
+    <div id="cs-err" style="color:var(--red);font-size:12px;margin-bottom:8px"></div>
+    <button class="btn btn-primary w-full" onclick="submitClientSignup()">Request Access</button>
+    <button class="btn btn-ghost w-full" style="margin-top:6px" onclick="renderLogin()">← Back to Login</button>
+  </div>`;
+}
+async function submitClientSignup(){
+  const name=(document.getElementById('cs-name')?.value||'').trim();
+  const email=(document.getElementById('cs-email')?.value||'').trim().toLowerCase();
+  const company=(document.getElementById('cs-company')?.value||'').trim();
+  const mobile=(document.getElementById('cs-mobile')?.value||'').trim();
+  const err=document.getElementById('cs-err');
+  if(!name||!email){if(err)err.textContent='Name and email are required';return;}
+  const reqId=uid();
+  await fbSet('client_signup_requests/'+reqId,{id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
+  alert('Your request has been submitted! Admin will review and grant access.');
+  renderLogin();
+}
+
+
+async function approveClientSignup(reqId){
+  const req=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
+  if(!req) return;
+  // Find or match client by company name
+  var client=CLIENTS.find(function(c){return (c.name||'').toLowerCase()===(req.company||'').toLowerCase();});
+  var clientId=client?client.id:null;
+  // Create Firebase Auth account for client
+  const tempPass='Client@'+Math.random().toString(36).slice(2,8);
+  const userId=uid();
+  const userRecord={id:userId,name:req.name,email:req.email,mobile:req.mobile||'',
+    role:'client',active:true,clientId:clientId||'',
+    pendingPasswordReset:tempPass,createdAt:today()};
+  await fbSet('users/'+userId,userRecord);
+  await fbUpd('client_signup_requests/'+reqId,{status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId});
+  toast('✓ Client account created for '+req.name+'. Temporary password: '+tempPass+'. Ask them to log in and change it via Forgot Password.');
+  render();
+}
+async function rejectClientSignup(reqId){
+  await fbUpd('client_signup_requests/'+reqId,{status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
+  toast('Client signup request rejected');
+  render();
 }
 
 // ═══════════════════════════════════════
@@ -5424,19 +5740,137 @@ function applyTaskSort(tasks){
 // ═══════════════════════════════════════
 //  REPORTS PAGE
 // ═══════════════════════════════════════
+
+// ─── No Time Entry Report ──────────────────────────────────────────────────
+function noEntryTab(){
+  const role=currentUser.role;
+  const isAdmin=role==='superadmin'||role==='manager';
+  // Date picker state stored on window to persist across renders
+  if(!window._noEntryDate) window._noEntryDate=today();
+
+  const selDate=window._noEntryDate;
+
+  // All active users (non-superadmin optional) in scope
+  const allStaff=USERS.filter(function(u){
+    return u.active!==false&&u.role!=='superadmin'&&u.role!=='';
+  });
+
+  // Filter by dept for managers
+  const scopedStaff=isAdmin&&role!=='superadmin'
+    ? allStaff.filter(function(u){
+        const depts=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);
+        return depts.some(function(d){return (currentUser.deptIds||[currentUser.deptId]).includes(d);});
+      })
+    : allStaff;
+
+  // Find who HAS entries on that date
+  const enteredIds=new Set(
+    TIME_ENTRIES.filter(function(e){return e.date===selDate;}).map(function(e){return e.userId;})
+  );
+
+  const noEntry=scopedStaff.filter(function(u){return !enteredIds.has(u.id);});
+  const hasEntry=scopedStaff.filter(function(u){return enteredIds.has(u.id);});
+
+  // Group no-entry by dept
+  const byDept={};
+  noEntry.forEach(function(u){
+    const deptId=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds[0]:u.deptId;
+    const dept=getDept(deptId);
+    const key=dept?dept.name:'Unassigned';
+    if(!byDept[key]) byDept[key]=[];
+    byDept[key].push(u);
+  });
+
+  const isWeekend=new Date(selDate+'T00:00:00').getDay()%6===0;
+
+  return `
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+    <div style="font-size:14px;font-weight:700">No Time Entry Report</div>
+    <input type="date" class="form-input" value="${selDate}"
+      style="width:160px;height:32px;font-size:12px;padding:0 8px"
+      onchange="window._noEntryDate=this.value;render()"/>
+    <div style="font-size:12px;color:var(--text3)">
+      ${scopedStaff.length} staff · 
+      <span style="color:var(--red);font-weight:600">${noEntry.length} no entry</span> · 
+      <span style="color:var(--green,#4ade80)">${hasEntry.length} logged time</span>
+    </div>
+    ${isWeekend?'<span style="font-size:11px;background:rgba(245,158,11,.15);color:var(--amber);padding:2px 8px;border-radius:99px">Weekend</span>':''}
+  </div>
+
+  ${noEntry.length===0
+    ? `<div style="text-align:center;padding:3rem;color:var(--green,#4ade80)">
+        ✓ All staff logged time on ${selDate}
+       </div>`
+    : Object.entries(byDept).sort(function(a,b){return a[0].localeCompare(b[0]);}).map(function(kv){
+        const deptName=kv[0], users=kv[1];
+        return `<div style="margin-bottom:16px">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;
+            color:var(--text3);border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:8px">
+            ${deptName} (${users.length} missing)
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">
+            ${users.map(function(u){
+              return `<div style="display:flex;align-items:center;gap:8px;
+                background:var(--bg2);border:1px solid var(--border);
+                border-left:3px solid var(--red);
+                border-radius:var(--r);padding:7px 10px">
+                <div class="avatar ${avClass(u.id)}" style="width:28px;height:28px;font-size:10px;flex-shrink:0">
+                  ${initials(u.name)}
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:600">${u.name}</div>
+                  <div style="font-size:10px;color:var(--text3)">${u.role||''}</div>
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }).join('')
+  }
+
+  ${hasEntry.length?`
+  <details style="margin-top:16px">
+    <summary style="cursor:pointer;font-size:12px;color:var(--text3);padding:6px 0">
+      ▸ ${hasEntry.length} staff who logged time on ${selDate}
+    </summary>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;margin-top:8px">
+      ${hasEntry.map(function(u){
+        const secs=TIME_ENTRIES.filter(function(e){return e.date===selDate&&e.userId===u.id;})
+          .reduce(function(a,e){return a+(e.seconds||0);},0);
+        return `<div style="display:flex;align-items:center;gap:8px;
+          background:var(--bg2);border:1px solid var(--border);
+          border-left:3px solid var(--green,#4ade80);
+          border-radius:var(--r);padding:7px 10px">
+          <div class="avatar ${avClass(u.id)}" style="width:24px;height:24px;font-size:9px;flex-shrink:0">
+            ${initials(u.name)}
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:600">${u.name}</div>
+            <div style="font-size:10px;color:var(--accent);font-family:var(--mono)">${fmtSec(secs)}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </details>`:''}
+  `;
+}
+
 function reportsPage(){
   const role=currentUser.role;
   const isAdmin=role==='superadmin'||role==='manager';
   // Merged: Daily | Week | Month | Range | Performance (admin only)
   const tabs=isAdmin
-    ?['📅 Daily','🗓 Week','📆 Month','🔢 Range','👤 Performance']
-    :['📅 Daily','🗓 Week','📆 Month','🔢 Range'];
+    ?['📅 Daily','🗓 Week','📆 Month','🔢 Range','👤 Performance','🚫 No Entry','📊 Timesheet','💰 By Client']
+    :['📅 Daily','🗓 Week','📆 Month','🔢 Range','🚫 No Entry','📊 Timesheet'];
   const content=(()=>{
     if(curTab===0) return dailyTab();
     if(curTab===1) return weekSheet();
     if(curTab===2) return monthSheet();
     if(curTab===3) return rangeSheet();
     if(curTab===4&&isAdmin) return perfTab();
+    if(curTab===5||(curTab===4&&!isAdmin)) return noEntryTab();
+    if(curTab===6||(curTab===5&&!isAdmin)) return weeklyTimesheetTab();
+    if(curTab===7&&isAdmin) return billingByClientTab();
     return dailyTab();
   })();
   return`<div class="page-header"><div class="page-title">Reports</div></div>
@@ -6173,11 +6607,22 @@ function requiresUDIN(t){
 }
 function hasValidUDIN(t){
   if(!requiresUDIN(t))return true;
-  // Check CERTIFICATES collection (pass full task object for better matching)
+  // Check CERTIFICATES collection (full task object for best matching)
   const cert=getCert(t);
   if(cert&&cert.udin&&validateUDIN(cert.udin))return true;
-  // Fallback: legacy t.udins array on task itself
-  return Array.isArray(t.udins)&&t.udins.length>0&&t.udins[0]?.udin&&validateUDIN(t.udins[0].udin);
+  // Fallback: check if task has a certId linking to a cert with UDIN
+  if(t.certId){
+    const linkedCert=CERTIFICATES.find(c=>c.id===t.certId);
+    if(linkedCert&&linkedCert.udin&&validateUDIN(linkedCert.udin))return true;
+  }
+  // Legacy: t.udins array on task itself
+  if(Array.isArray(t.udins)&&t.udins.length>0&&t.udins[0]?.udin&&validateUDIN(t.udins[0].udin))return true;
+  // Last resort: any cert for this client with a valid UDIN
+  if(t.clientId){
+    const anyCert=CERTIFICATES.find(c=>c.clientId===t.clientId&&c.udin&&validateUDIN(c.udin));
+    if(anyCert)return true;
+  }
+  return false;
 }
 function validateUDIN(udin){return /^[A-Z0-9]{18}$/.test(udin.trim().toUpperCase())||udin.trim().length>=6}
 // CA Firms helpers
@@ -6188,16 +6633,26 @@ function getCert(taskIdOrTask, strictTaskLink=false){
   // Accept either a taskId string or a task object
   const t=typeof taskIdOrTask==='object'?taskIdOrTask:TASKS.find(x=>x.id===taskIdOrTask);
   if(!t) return null;
-  // Primary: match by explicit taskId link (always checked)
+  // Primary: task has certId stored directly (most reliable link)
+  if(t.certId){
+    const cert=CERTIFICATES.find(c=>c.id===t.certId);
+    if(cert) return cert;
+  }
+  // Secondary: match by explicit taskId link on the cert
   let cert=CERTIFICATES.find(c=>c.taskId===t.id);
   if(cert) return cert;
-  if(strictTaskLink) return null; // strict mode: only direct taskId links count
-  // Secondary: match by clientId + subDeptId for UDIN validation only
+  if(strictTaskLink) return null; // strict mode: only direct links count
+  // Tertiary: match by serialNo field on task (e.g. task.serialNo links to cert.serialNo)
+  if(t.serialNo){
+    cert=CERTIFICATES.find(c=>c.serialNo===t.serialNo);
+    if(cert) return cert;
+  }
+  // Quaternary: match by clientId + subDeptId (year-based — most specific fuzzy)
   if(t.clientId&&t.subDeptId){
     cert=CERTIFICATES.find(c=>c.clientId===t.clientId&&c.subDeptId===t.subDeptId&&c.udin&&validateUDIN(c.udin));
     if(cert) return cert;
   }
-  // Tertiary: match by clientId alone
+  // Quinary: match by clientId alone (least specific)
   if(t.clientId){
     cert=CERTIFICATES.find(c=>c.clientId===t.clientId&&c.udin&&validateUDIN(c.udin));
     if(cert) return cert;
@@ -6363,7 +6818,7 @@ function loginPageHTML(){
         ${loginLoading?'Signing in…':'Sign In'}
       </button>
       <div style="text-align:center;margin-top:14px">
-        <button onclick="showForgotPassword()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline">Forgot password?</button>
+        <button onclick="showForgotPassword()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline">Forgot password?</button><button onclick="showClientSignup()" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text3);margin-left:10px">Client? Sign up</button>
       </div>
     </div>
   </div>`;
@@ -6572,6 +7027,7 @@ function switchUser(){doLogout();}
 function topBarHTML(){
   const u=currentUser,runSec=activeTimer?liveSec(activeTimer):0;
   const searchRes=searchQuery.length>1?doSearch(searchQuery):[];
+  const pendingSignups=(currentUser.role==='superadmin')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
   const pendingApprovals=(currentUser.role!=='employee')?TASKS.filter(t=>t.approvalStatus==='pending'&&(currentUser.role==='superadmin'||t.deptId===currentUser.deptId)).length:0;
   const activeFirm=getActiveFirm();
   return`<div class="top-bar">
@@ -6619,9 +7075,10 @@ function topBarHTML(){
       <span class="uname">${shortName(u.name)}</span>
       <span class="role-badge">${u.role==='superadmin'?'Admin':u.role==='manager'?'Mgr':'Staff'}</span>
     </div>
+    <button onclick="darkMode=!darkMode;LS.set('darkMode',darkMode);document.documentElement.setAttribute('data-theme',darkMode?'dark':'light')" style="background:none;border:none;cursor:pointer;font-size:17px;padding:4px 8px;color:var(--text2)" title="Toggle theme">${darkMode?'☀':'🌙'}</button>
   </div>`;
 }
-function doSearch(q){const lq=q.toLowerCase().trim();if(lq.length<2)return[];return myTasks().filter(function(t){return t.title.toLowerCase().includes(lq)||((getClient(t.clientId)?.name||'').toLowerCase().includes(lq))||t.status.toLowerCase().includes(lq)||((getSD(t.subDeptId)?.name||'').toLowerCase().includes(lq))||((getDept(t.deptId)?.name||'').toLowerCase().includes(lq))||((t.notes||'').toLowerCase().includes(lq))||(t.priority||'').toLowerCase().includes(lq)||taskAssignees(t).some(function(u){return u.name.toLowerCase().includes(lq)});}).slice(0,12).map(function(t){return Object.assign({},t,{client:getClient(t.clientId)?.name||'',dc:getDept(t.deptId)?.color||'#5a6080'})})}
+function doSearch(q){const lq=q.toLowerCase().trim();if(lq.length<2)return[];return myTasks().filter(function(t){const comts=COMMENTS[t.id]?Object.values(COMMENTS[t.id]).map(function(c){return c.text||'';}).join(' '):'';return t.title.toLowerCase().includes(lq)||((getClient(t.clientId)?.name||'').toLowerCase().includes(lq))||t.status.toLowerCase().includes(lq)||((getSD(t.subDeptId)?.name||'').toLowerCase().includes(lq))||((getDept(t.deptId)?.name||'').toLowerCase().includes(lq))||((t.notes||'').toLowerCase().includes(lq))||((t.description||'').toLowerCase().includes(lq))||(t.priority||'').toLowerCase().includes(lq)||taskAssignees(t).some(function(u){return u.name.toLowerCase().includes(lq)})||comts.toLowerCase().includes(lq);}).slice(0,12).map(function(t){return Object.assign({},t,{client:getClient(t.clientId)?.name||'',dc:getDept(t.deptId)?.color||'#5a6080'})})}
 function hl(text,q){if(!q)return text;const i=text.toLowerCase().indexOf(q.toLowerCase());if(i<0)return text;return text.slice(0,i)+`<span style="color:var(--accent);font-weight:600">`+text.slice(i,i+q.length)+`</span>`+text.slice(i+q.length)}
 
 // ═══════════════════════════════════════
@@ -6689,6 +7146,7 @@ function bottomNavHTML(){return sideNavHTML()}
 //  PAGE ROUTER
 // ═══════════════════════════════════════
 function pageHTML(){
+  if(isClientUser()) return clientPortalPage();
   if(curPage==='home')return homePage();
   if(curPage==='dashboard')return dashPage();
   if(curPage==='tasks')return tasksPage();
@@ -6927,14 +7385,14 @@ function tasksPage(){
       +msFilterHTML('clients','Client',clientOpts,taskFilter.clients||[])
       +msFilterHTML('statuses','Status',statusOpts,taskFilter.statuses||[])
       +msFilterHTML('priorities','Priority',priorityOpts,taskFilter.priorities||[])
-      +`<select class="form-select" style="width:auto;font-size:12px;padding:4px 8px" onchange="taskFilter.due=this.value;curTab=0;render()">
+      +`<select class="form-select" style="width:auto;font-size:12px;padding:4px 8px" onchange="taskFilter.due=this.value;taskFilter.exactDate='';curTab=0;render()">
           <option value="all">Any Date</option>
           <option value="overdue"${taskFilter.due==='overdue'?' selected':''}>⚠ Overdue</option>
           <option value="week"${taskFilter.due==='week'?' selected':''}>📅 This Week</option>
           <option value="nodue"${taskFilter.due==='nodue'?' selected':''}>⭕ No Due Date</option>
         </select>
         <input type="date" class="form-input" title="Filter by exact due date" style="height:32px;font-size:12px;padding:0 8px;width:140px" value="${taskFilter.exactDate||''}" onchange="taskFilter.exactDate=this.value||'';;taskFilter.due='all';curTab=0;render()"/>`
-      +(hasFilter?`<button class="btn btn-danger btn-sm" onclick="taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',firm:'all'};curTab=0;render()">✕ Clear</button>`:'');
+      +(hasFilter?`<button class="btn btn-danger btn-sm" onclick="taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',exactDate:'',firm:'all',search:''};curTab=0;render()">✕ Clear</button>`:'');
     })()}
   </div>
   <div class="tabs">${['All','Active','Approvals','UDIN','Certs','Done','Rejected','🔒 Private'].map((l,i)=>{
@@ -6951,7 +7409,23 @@ function tasksPage(){
     const rejectedT=pubTasks.filter(t=>t.status==='Rejected'||t.approvalStatus==='rejected');
     const tabMap=[(showClosedBilled?pubTasks:pubTasks.filter(t=>!isTaskTerminal(t))),pubTasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started'),pendingAppr,udinNeeded,certTasks,pubTasks.filter(t=>isTaskTerminal(t)&&showClosedBilled),rejectedT,privateT];
     // Approval tab uses custom card
-    if(curTab===2&&(role==='superadmin'||role==='manager'))return`<div class="page-title mb-8">Approvals <span style="font-size:12px;color:var(--text3);font-weight:400">${pendingAppr.length} pending</span></div>${pendingAppr.length?pendingAppr.map(approvalCard).join(''):"<div style='text-align:center;padding:3rem;color:var(--text3)'>No pending approvals ✓</div>"}`;
+    if(curTab===2&&(role==='superadmin'||role==='manager'))return`<div class="page-title mb-8">Approvals <span style="font-size:12px;color:var(--text3);font-weight:400">${pendingAppr.length} pending</span></div>${(()=>{
+        const signupReqs=(window._clientSignupRequests||[]).filter(function(r){return r.status==='pending';});
+        if(!signupReqs.length) return '';
+        return '<div style="background:rgba(126,217,87,.08);border:1px solid rgba(126,217,87,.3);border-radius:var(--r2);padding:12px;margin-bottom:14px">'
+          +'<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">👤 Client Portal Sign-Up Requests ('+signupReqs.length+')</div>'
+          +signupReqs.map(function(r){
+            return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+              +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+r.name+'</div>'
+              +'<div style="font-size:11px;color:var(--text3)">'+r.email+(r.company?' · '+r.company:'')+(r.mobile?' · '+r.mobile:'')+'</div></div>'
+              +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+              +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="approveClientSignup(\''+r.id+'\')">✓ Create &amp; Approve</button>'
+              +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rejectClientSignup(\''+r.id+'\')">✗ Reject</button>'
+              +'</div></div>';
+          }).join('')
+          +'</div>';
+      })()}
+      ${pendingAppr.length?pendingAppr.map(approvalCard).join(''):"<div style='text-align:center;padding:3rem;color:var(--text3)'>No pending approvals ✓</div>"}`;
     const ft=tabMap[curTab]||pubTasks;
     const sorted=applyTaskSort(ft);
     const grouped=groupTasks(sorted);
@@ -9297,6 +9771,8 @@ function modalHTML(){
     dscDetail:()=>dscDetailHTML(data),
     dscEdit:()=>dscEditHTML(data),
     dscBulkEdit:()=>dscBulkEditHTML(),
+    leaveApply:()=>leaveApplyHTML(),
+    clientTaskDetail:()=>clientTaskDetailHTML(data),
     billingInvoice:()=>billingInvoiceHTML(data),
     dscOutward:()=>dscOutwardHTML(data),
     dscInward:()=>dscInwardHTML(data),
@@ -9846,6 +10322,7 @@ function taskDetailHTML(data){
     ${dept?`<span class="badge" style="background:${dept.color}22;color:${dept.color}">${dept.name}</span>`:''}
     <span class="status-badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)}">${t.status}</span>
     ${client?`<span style="font-size:11px;color:var(--text3)">${client.name}</span>`:''}
+    ${client&&(client.primaryMobile||client.phone)?'<a href="'+waLink(client.primaryMobile||client.phone,taskWhatsAppMsg(t))+'" target="_blank" style="font-size:10px;background:#25D366;color:#fff;padding:1px 6px;border-radius:99px;text-decoration:none">🟢</a>':''}
     ${t.dueDate?dueBadge(t.dueDate,t.startDate):''}
     ${approvalBadge(t)}
     ${t.private?`<span style="font-size:10px;background:var(--teal-bg);color:var(--teal);padding:2px 7px;border-radius:99px">🔒 Private</span>`:''}

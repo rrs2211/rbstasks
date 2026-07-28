@@ -1372,6 +1372,9 @@ function editTimeEntryHTML({entryId}){
 async function saveTimeEntry(entryId){
   const e=TIME_ENTRIES.find(x=>x.id===entryId);
   if(!e)return;
+  // Gate: block if overdue tasks exist (editing time also blocked)
+  const gateMsg=checkTimePendingGate(e.taskId);
+  if(gateMsg){toast(gateMsg);return;}
   const hh=parseInt(document.getElementById('ete-h')?.value)||0;
   const mm=parseInt(document.getElementById('ete-m')?.value)||0;
   const newSec=hh*3600+mm*60;
@@ -2078,6 +2081,8 @@ function batchLogHTML({taskId}){
 }
 
 async function saveBatchLog(taskId){
+  const gateMsg=checkTimePendingGate(taskId);
+  if(gateMsg){toast(gateMsg);closeModal();return;}
   const qty=parseInt(document.getElementById('bl-qty')?.value)||0;
   if(qty<=0){toast('Enter quantity > 0');return;}
   const userId=document.getElementById('bl-user')?.value||currentUser.id;
@@ -4638,8 +4643,9 @@ async function sendMorningDigest(ds){
     if(mgrEmails.length)await sendEmailBCC(mgrEmails,'['+dept.name+'] Morning Summary - '+fmtDate(todayStr),body.join('\n'));
   });
   // Rule 9: full company to admin
-  var admins=allAdmins();if(!admins.length||!active.length)return;
-  var body=['Good morning,','','Company active tasks today ('+active.length+'):',''];
+  var admins=allAdmins();if(!admins.length)return;
+  var body=['Good morning,','','Company active tasks today: '+active.length+(active.length===0?' — No tasks due today. Have a great day!':''),''];
+  if(!active.length){body.push('All caught up — no active tasks are due today.');}
   DEPTS.forEach(function(dept){var dt=active.filter(function(t){return t.deptId===dept.id;});if(!dt.length)return;body.push('\n-- '+dept.name.toUpperCase()+' --');dt.forEach(function(t){body.push('* '+t.title+' ('+t.status+')');});});
   body.push('\n'+firm);
   var adminEmails=admins.filter(function(a){return a.active!==false&&a.email;}).map(function(a){return a.email;});
@@ -4647,24 +4653,7 @@ async function sendMorningDigest(ds){
   // Auto-notify staff with no time entries yesterday
   var yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);var yStr=yesterday.toISOString().slice(0,10);var yDay=yesterday.getDay();
   if(yDay>=1&&yDay<=5){var noEntryYest=USERS.filter(function(u){if(!u.email||u.active===false||u.role==='superadmin')return false;return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});});noEntryYest.forEach(async function(u){await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),'Hi '+u.name+',\n\nWe noticed no time entries on '+fmtDate(yStr)+'. Please log your work in TaskHub.\n\nRegards,\n'+firm);});if(noEntryYest.length&&adminEmails.length)await sendEmailBCC(adminEmails,'[Attendance] No entries - '+fmtDate(yStr),noEntryYest.length+' staff had no entries:\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));}
-  // Auto-email: notify staff who have not logged any time yesterday (if it's a weekday)
-  var yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);
-  var yStr=yesterday.toISOString().slice(0,10);
-  var yDay=yesterday.getDay();
-  if(yDay>=1&&yDay<=5){ // only Mon-Fri
-    var noEntryYest=USERS.filter(function(u){
-      if(!u.email||u.active===false||u.role==='superadmin') return false;
-      return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});
-    });
-    noEntryYest.forEach(async function(u){
-      await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),
-        'Hi '+u.name+',\n\nWe noticed you did not log any time entries on '+fmtDate(yStr)+'.\n\nPlease log your work by updating time entries in TaskHub.\n\nRegards,\n'+firm);
-    });
-    if(noEntryYest.length&&adminEmails.length){
-      await sendEmailBCC(adminEmails,'[Attendance] Staff with no entries - '+fmtDate(yStr),
-        noEntryYest.length+' staff had no time entries on '+fmtDate(yStr)+':\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));
-    }
-  }
+
 }
 
 // Rules 7,10,11: Evening digest
@@ -5280,11 +5269,13 @@ function checkTimePendingGate(excludeTaskId){
   const blocking=TASKS.filter(function(t){
     if(isTaskTerminal(t)) return false;
     if(t.id===excludeTaskId) return false; // the task being timed is exempt
-    // must be assigned to current user
-    if(!taskAssignees(t).some(function(a){return a.id===currentUser.id;})) return false;
+    // assigned to current user OR (managers) any task in their dept
+    const assignedToMe=taskAssignees(t).some(function(a){return a.id===currentUser.id;});
+    const myDepts=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);
+    const inMyDept=currentUser.role==='manager'&&myDepts.length>0&&myDepts.includes(t.deptId);
+    if(!assignedToMe&&!inMyDept) return false;
     // overdue OR due today (start<=today<=dueDate, i.e. active today)
     if(!t.dueDate) return false;
-    const start=t.startDate||t.dueDate;
     const isOverdue=t.dueDate<td&&t.dueDate!==td; // only yesterday or before, not today
     return isOverdue;
   });
@@ -5576,6 +5567,95 @@ async function approveClientSignup(reqId){
 async function rejectClientSignup(reqId){
   await fbUpd('client_signup_requests/'+reqId,{status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
   toast('Client signup request rejected');
+  render();
+}
+
+
+// ─── Task Date Extension Requests ────────────────────────────────────────
+function requestDateExtensionHTML(data){
+  const t=TASKS.find(x=>x.id===(data?.taskId||data?.id));
+  if(!t) return mHdr('Request Extension')+'<p style="padding:12px">Task not found.</p>';
+  const existing=t.dateExtensionRequest;
+  if(existing&&existing.status==='pending'){
+    return mHdr('Extension Request Pending')
+      +'<div style="padding:14px">'
+      +'<div style="background:rgba(245,158,11,.1);border:1px solid var(--amber);border-radius:var(--r);padding:12px;margin-bottom:12px">'
+      +'<div style="font-size:12px;font-weight:600;color:var(--amber);margin-bottom:6px">⏳ Pending Admin Review</div>'
+      +'<div style="font-size:12px">Requested date: <b>'+fmtDate(existing.requestedDate)+'</b></div>'
+      +'<div style="font-size:12px;margin-top:4px">Reason: '+escHtml(existing.reason||'')+'</div>'
+      +'<div style="font-size:11px;color:var(--text3);margin-top:4px">Submitted: '+existing.requestedAt+'</div>'
+      +'</div>'
+      +'<button class="btn btn-ghost btn-sm" onclick="cancelDateExtension(\''+t.id+'\')" style="color:var(--red)">Withdraw Request</button>'
+      +'</div>';
+  }
+  return `${mHdr('Request Due Date Extension')}
+  <div style="background:var(--bg3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px;font-size:12px">
+    <div style="color:var(--text3)">Task</div>
+    <div style="font-weight:600;margin-top:2px">${t.title}</div>
+    <div style="color:var(--text3);margin-top:6px">Current Due Date</div>
+    <div style="font-weight:600;color:var(--red)">${fmtDate(t.dueDate)||'Not set'}</div>
+  </div>
+  <div class="form-row"><label class="form-label">Requested New Due Date *</label>
+    <input class="form-input" type="date" id="ext-date" min="${today()}"
+      value="${t.dueDate||today()}"/>
+  </div>
+  <div class="form-row"><label class="form-label">Reason for Extension *</label>
+    <textarea class="form-textarea" id="ext-reason" rows="3"
+      placeholder="Explain why more time is needed…"></textarea>
+  </div>
+  <button class="btn btn-primary w-full" onclick="submitDateExtension('${t.id}')">Submit Extension Request</button>
+  `;
+}
+
+async function submitDateExtension(taskId){
+  const newDate=document.getElementById('ext-date')?.value;
+  const reason=(document.getElementById('ext-reason')?.value||'').trim();
+  if(!newDate){toast('Select a new due date');return;}
+  if(!reason){toast('Please enter a reason');return;}
+  const t=TASKS.find(x=>x.id===taskId);
+  if(newDate<=t.dueDate){toast('New date must be after current due date');return;}
+  await fbUpd('tasks/'+taskId,{dateExtensionRequest:{
+    status:'pending',
+    requestedBy:currentUser.id,
+    requestedDate:newDate,
+    originalDueDate:t.dueDate,
+    reason,
+    requestedAt:today()
+  }});
+  toast('Extension request submitted — awaiting admin approval');
+  closeModal();render();
+}
+
+async function cancelDateExtension(taskId){
+  if(!confirm('Withdraw this extension request?')) return;
+  await fbUpd('tasks/'+taskId,{dateExtensionRequest:null});
+  toast('Extension request withdrawn');
+  render();
+}
+
+async function approveDateExtension(taskId,adminDate){
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t) return;
+  const req=t.dateExtensionRequest;
+  const newDate=adminDate||req.requestedDate;
+  await fbUpd('tasks/'+taskId,{
+    dueDate:newDate,
+    dateExtensionRequest:{...req,status:'approved',approvedBy:currentUser.id,approvedDate:newDate,approvedAt:today()}
+  });
+  // Log the change
+  await logChange(taskId,'dates_changed','Due date extended to '+fmtDate(newDate)+' (approved by '+currentUser.name+')');
+  toast('✓ Due date updated to '+fmtDate(newDate));
+  render();
+}
+
+async function rejectDateExtension(taskId){
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t) return;
+  const req=t.dateExtensionRequest;
+  await fbUpd('tasks/'+taskId,{
+    dateExtensionRequest:{...req,status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()}
+  });
+  toast('Extension request rejected — due date unchanged');
   render();
 }
 
@@ -6818,7 +6898,13 @@ function loginPageHTML(){
         ${loginLoading?'Signing in…':'Sign In'}
       </button>
       <div style="text-align:center;margin-top:14px">
-        <button onclick="showForgotPassword()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline">Forgot password?</button><button onclick="showClientSignup()" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text3);margin-left:10px">Client? Sign up</button>
+        <button onclick="showForgotPassword()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline">Forgot password?</button>
+      </div>
+      <div onclick="showClientSignup()" style="margin-top:18px;border:2px dashed var(--border);border-radius:var(--r2);padding:14px 16px;cursor:pointer;text-align:center;transition:.15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <div style="font-size:22px;margin-bottom:4px">🏢</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text)">Client Portal Access</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">View your tasks &amp; documents online</div>
+        <div style="font-size:11px;color:var(--accent);margin-top:6px;font-weight:600">Sign up for free access →</div>
       </div>
     </div>
   </div>`;
@@ -7421,6 +7507,36 @@ function tasksPage(){
               +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
               +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="approveClientSignup(\''+r.id+'\')">✓ Create &amp; Approve</button>'
               +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rejectClientSignup(\''+r.id+'\')">✗ Reject</button>'
+              +'</div></div>';
+          }).join('')
+          +'</div>';
+      })()}
+      ${(()=>{
+        const pendingDateExt=myTasks().filter(function(t){return t.dateExtensionRequest&&t.dateExtensionRequest.status==='pending';});
+        if(!pendingDateExt.length) return '';
+        return '<div style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:var(--r2);padding:12px;margin-bottom:14px">'
+          +'<div style="font-size:13px;font-weight:700;color:var(--blue);margin-bottom:10px">📅 Due Date Extension Requests ('+pendingDateExt.length+')</div>'
+          +pendingDateExt.map(function(t){
+            const req=t.dateExtensionRequest;
+            const ru=getUser(req.requestedBy);
+            const cl=getClient(t.clientId);
+            return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px">'
+              +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">'
+              +'<div style="flex:1">'
+              +'<div style="font-size:12px;font-weight:600">'+escHtml(t.title)+'</div>'
+              +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+(cl?cl.name:'')+(t.dueDate?' · Current due: '+fmtDate(t.dueDate):'')+'</div>'
+              +'<div style="font-size:11px;color:var(--blue);margin-top:4px">Requested by '+escHtml(ru?.name||'')+'  →  '+fmtDate(req.requestedDate)+'</div>'
+              +'<div style="font-size:11px;color:var(--text2);margin-top:3px"><b>Reason:</b> '+escHtml(req.reason||'')+'</div>'
+              +'<div style="font-size:11px;color:var(--text3);margin-top:6px">Admin can approve with requested date or set a different date:</div>'
+              +'<div style="display:flex;align-items:center;gap:6px;margin-top:4px">'
+              +'<input type="date" id="ext-admin-date-'+t.id+'" class="form-input" value="'+req.requestedDate+'" style="height:28px;font-size:11px;padding:0 6px;width:150px"/>'
+              +'</div>'
+              +'</div>'
+              +'<div style="display:flex;gap:6px;flex-shrink:0;align-items:flex-start;flex-direction:column">'
+              +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80);white-space:nowrap" '
+              +'onclick="approveDateExtension(\''+t.id+'\',document.getElementById(\'ext-admin-date-'+t.id+'\')?.value)">✓ Approve</button>'
+              +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rejectDateExtension(\''+t.id+'\')">✗ Reject</button>'
+              +'</div>'
               +'</div></div>';
           }).join('')
           +'</div>';
@@ -8048,7 +8164,15 @@ async function saveCert(id){
     updates.udinDate=document.getElementById('ce-udindate')?.value||'';
   }
   await fbUpd('certificates/'+id,updates);
-  closeModal();toast('Certificate updated');
+  // Mirror UDIN back to task.udins so task modal and saveTaskStatus both see it
+  if(cert.taskId&&updates.udin&&validateUDIN(updates.udin)){
+    const task=TASKS.find(t=>t.id===cert.taskId);
+    if(task){
+      const newUdins=[{memberName:cert.signingMember||'',udin:updates.udin,date:updates.udinDate||today()}];
+      await fbUpd('tasks/'+cert.taskId,{udins:newUdins,certId:cert.id,isCertificate:true});
+    }
+  }
+  closeModal();toast('Certificate updated ✓');
 }
 async function deleteCert(id){
   const isAdminOrMgr=currentUser.role==='superadmin'||currentUser.role==='manager';
@@ -9773,6 +9897,7 @@ function modalHTML(){
     dscBulkEdit:()=>dscBulkEditHTML(),
     leaveApply:()=>leaveApplyHTML(),
     clientTaskDetail:()=>clientTaskDetailHTML(data),
+    dateExtension:()=>requestDateExtensionHTML(data),
     billingInvoice:()=>billingInvoiceHTML(data),
     dscOutward:()=>dscOutwardHTML(data),
     dscInward:()=>dscInwardHTML(data),
@@ -10585,13 +10710,12 @@ async function saveTaskStatus(id){
   const sts=taskStatuses(t);const terminalSt=sts[sts.length-1];
   if(newStatus===terminalSt&&!(t.seconds>0)){toast('⚠ Cannot sign off with 0 time logged');return;}
   if(requiresUDIN(t)&&newStatus===terminalSt){
-    // Check CERTIFICATES collection (primary) or legacy t.udins array
-    // Use full task object for cert lookup (finds by clientId+subDept if no direct taskId link)
-    const cert=getCert(t);
-    const hasUDIN=(cert&&cert.udin&&validateUDIN(cert.udin))||
-                  (Array.isArray(t.udins)&&t.udins[0]?.udin&&validateUDIN(t.udins[0].udin));
-    if(!hasUDIN){
-      toast('⚠ Enter valid UDIN in the Certificates module before closing this task');
+    // Use hasValidUDIN which checks: cert by certId, cert by taskId, t.udins, client fallback
+    if(!hasValidUDIN(t)){
+      // Show exactly what's missing for easier debugging
+      const cert=getCert(t);
+      const certInfo=cert?(' Cert found: '+cert.certNo+', UDIN: '+(cert.udin||'missing')):'No cert linked';
+      toast('⚠ UDIN required. '+certInfo+'. Update UDIN in the Certificates tab.');
       return;
     }
   }

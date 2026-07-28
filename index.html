@@ -10528,6 +10528,18 @@ function taskDetailHTML(data){
     <button class="btn btn-primary btn-sm mt-10" ${udinLocked?"disabled":""} onclick="saveTaskDates('${id}')">Save Dates</button>
   </div>`:''}
 
+  <!-- ── Extension Request (all assignees) ── -->
+  ${isAssignedTo(t,currentUser.id)?`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+    <div>
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">Due Date Extension</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">${t.dueDate?'Current due: '+fmtDate(t.dueDate):'No due date set'}</div>
+      ${t.dateExtensionRequest?.status==='pending'?`<div style="font-size:10px;color:var(--amber);margin-top:3px">⏳ Extension request pending admin review</div>`:''}
+      ${t.dateExtensionRequest?.status==='approved'?`<div style="font-size:10px;color:var(--green,#4ade80);margin-top:3px">✓ Extension approved — new due: `+fmtDate(t.dateExtensionRequest.approvedDate)+`</div>`:''}
+      ${t.dateExtensionRequest?.status==='rejected'?`<div style="font-size:10px;color:var(--red);margin-top:3px">✗ Extension rejected — due date unchanged</div>`:''}
+    </div>
+    <button class="btn btn-ghost btn-sm" style="color:var(--amber);white-space:nowrap" onclick="openModal('dateExtension',{taskId:'${id}'})">⏰ Request Extension</button>
+  </div>`:''}
+
   <!-- ── SECTION 5: Assignees (admin/manager only) ── -->
   ${isAdminOrMgr?`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r2);padding:12px;margin-bottom:10px">
     <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">Assignees</div>

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOC<div class="sett-item" onclick="navigate('workflow')"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div class="sett-label">Workflows</div></div>TYPE html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF
@@ -929,6 +929,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
   db.ref('leaves').on('value',s=>{LEAVES=s.val()?Object.values(s.val()):[];render();});
   db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];});
+  db.ref('workflow_rules').on('value',s=>{WORKFLOW_RULES=s.val()?Object.values(s.val()):[];});
   db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
   db.ref('dsc_records').on('value',s=>{
     DSC_RECORDS=objToArr(s.val()||{});
@@ -5519,9 +5520,9 @@ function clientTaskDetailHTML(data){
 
 
 function showClientSignup(){
-  const d=document.getElementById('login-box')||document.getElementById('login-panel');
+  const d=document.querySelector('.login-card')||document.getElementById('login-box')||document.getElementById('login-panel');
   if(!d) return;
-  d.innerHTML=`<div style="max-width:360px;margin:0 auto;padding:24px">
+  d.innerHTML=`<div style="padding:24px">
     <div style="font-size:18px;font-weight:700;margin-bottom:4px">Client Portal Access</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Sign up to view your tasks. Your request will be sent to admin for approval.</div>
     <div class="form-row"><label class="form-label">Your Name</label><input class="form-input" id="cs-name" placeholder="Full name"/></div>
@@ -5657,6 +5658,501 @@ async function rejectDateExtension(taskId){
   });
   toast('Extension request rejected — due date unchanged');
   render();
+}
+
+
+function selectAllVisibleTasks(){
+  const ids=window._filteredTaskIds||[];
+  if(selectedTasks.size===ids.length) selectedTasks=new Set();
+  else selectedTasks=new Set(ids);
+  render();
+}
+
+async function bulkDeleteTasks(){
+  if(!selectedTasks.size){toast('No tasks selected');return;}
+  if(!confirm('Delete '+selectedTasks.size+' task(s)? This cannot be undone.')) return;
+  for(const id of selectedTasks){
+    await fbDel('tasks/'+id);
+    // Also delete related time entries
+    const entries=TIME_ENTRIES.filter(e=>e.taskId===id);
+    for(const e of entries) await fbDel('time_entries/'+e.id);
+  }
+  toast(selectedTasks.size+' task(s) deleted');
+  selectedTasks=new Set();
+  bulkMode=false;
+  render();
+}
+
+function bulkEditTasksHTML(){
+  const count=selectedTasks.size;
+  if(!count) return mHdr('Bulk Edit')+'<p style="padding:12px">No tasks selected.</p>';
+  const role=currentUser.role;
+  const isAdmin=role==='superadmin'||role==='manager';
+  const visibleUsers=USERS.filter(u=>role==='superadmin'||u.deptId===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(u.deptId)));
+  const depts=DEPTS.filter(d=>role==='superadmin'||d.id===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(d.id)));
+  const allStatuses=Object.values(STATUSES).flat().filter((s,i,a)=>a.indexOf(s)===i);
+  return `${mHdr('Bulk Edit '+count+' Task(s)')}
+  <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Only fields you fill will be updated. Leave blank to keep existing values.</div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Status</label>
+      <select class="form-select" id="be-status">
+        <option value="">— No change —</option>
+        ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label class="form-label">Priority</label>
+      <select class="form-select" id="be-priority">
+        <option value="">— No change —</option>
+        <option value="urgent">🔴 Urgent</option>
+        <option value="high">🟠 High</option>
+        <option value="medium">🟡 Medium</option>
+        <option value="low">🟢 Low</option>
+      </select>
+    </div>
+  </div>
+  ${isAdmin?`<div class="g2">
+    <div class="form-row"><label class="form-label">Department</label>
+      <select class="form-select" id="be-dept">
+        <option value="">— No change —</option>
+        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label class="form-label">Assignee (replaces)</label>
+      <select class="form-select" id="be-assignee">
+        <option value="">— No change —</option>
+        ${visibleUsers.map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+      </select>
+    </div>
+  </div>`:''}
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Due Date</label>
+      <input class="form-input" type="date" id="be-due"/>
+    </div>
+    <div class="form-row"><label class="form-label">Start Date</label>
+      <input class="form-input" type="date" id="be-start"/>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:4px">
+    <button class="btn btn-primary" style="flex:1" onclick="saveBulkTaskEdit()">Apply to ${count} Task(s)</button>
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+  </div>`;
+}
+
+async function saveBulkTaskEdit(){
+  const status=document.getElementById('be-status')?.value||'';
+  const priority=document.getElementById('be-priority')?.value||'';
+  const deptId=document.getElementById('be-dept')?.value||'';
+  const assigneeId=document.getElementById('be-assignee')?.value||'';
+  const dueDate=document.getElementById('be-due')?.value||'';
+  const startDate=document.getElementById('be-start')?.value||'';
+  if(!status&&!priority&&!deptId&&!assigneeId&&!dueDate&&!startDate){
+    toast('Set at least one field to update');return;
+  }
+  const updates={};
+  if(status) updates.status=status;
+  if(priority) updates.priority=priority;
+  if(deptId) updates.deptId=deptId;
+  if(dueDate) updates.dueDate=dueDate;
+  if(startDate) updates.startDate=startDate;
+  let count=0;
+  for(const id of selectedTasks){
+    const taskUpdates={...updates};
+    if(assigneeId){
+      const t=TASKS.find(x=>x.id===id);
+      const existing=(t?.assignees||[]).filter(a=>a!==assigneeId);
+      taskUpdates.assignees=[...existing,assigneeId];
+    }
+    await fbUpd('tasks/'+id,taskUpdates);
+    count++;
+  }
+  selectedTasks=new Set();
+  bulkMode=false;
+  closeModal();
+  toast('✓ Updated '+count+' task(s)');
+  render();
+}
+
+
+// ─── Quick Task ──────────────────────────────────────────────────────────
+function quickTaskHTML(){
+  const role=currentUser.role;
+  const isAdmin=role==='superadmin'||role==='manager';
+  const myDepts=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);
+  const availUsers=isAdmin
+    ? USERS.filter(u=>u.active!==false&&u.role!=='superadmin')
+    : [currentUser];
+  // Default dept: first dept of current user, or first Misc dept
+  const miscDept=DEPTS.find(d=>/misc/i.test(d.name))||DEPTS.find(d=>myDepts.includes(d.id))||DEPTS[0];
+  return `${mHdr('Quick Add Task')}
+  <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Creates a task in Misc with no client or due date. Quick and simple.</div>
+  <div class="form-row"><label class="form-label">Task Name *</label>
+    <input class="form-input" id="qt-name" placeholder="What needs to be done?" autofocus
+      onkeydown="if(event.key==='Enter')saveQuickTask()"/>
+  </div>
+  <div class="form-row"><label class="form-label">Assign To</label>
+    <select class="form-select" id="qt-assignee">
+      <option value="${currentUser.id}">${currentUser.name} (me)</option>
+      ${availUsers.filter(u=>u.id!==currentUser.id).map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}
+    </select>
+  </div>
+  ${isAdmin?`<div class="form-row"><label class="form-label">Department</label>
+    <select class="form-select" id="qt-dept">
+      ${DEPTS.map(d=>`<option value="${d.id}"${d.id===(miscDept?.id||'')?" selected":""}>${d.name}</option>`).join('')}
+    </select></div>`:''}
+  <div class="form-row"><label class="form-label">Due Date <span style="font-size:10px;color:var(--text3)">(optional)</span></label>
+    <input class="form-input" type="date" id="qt-due"/>
+  </div>
+  <button class="btn btn-primary w-full" onclick="saveQuickTask()">⚡ Add Task</button>`;
+}
+
+async function saveQuickTask(){
+  const name=(document.getElementById('qt-name')?.value||'').trim();
+  if(!name){toast('Enter a task name');document.getElementById('qt-name')?.focus();return;}
+  const assigneeId=document.getElementById('qt-assignee')?.value||currentUser.id;
+  const deptId=document.getElementById('qt-dept')?.value||
+    (DEPTS.find(d=>/misc/i.test(d.name))||DEPTS.find(d=>(Array.isArray(currentUser.deptIds)?currentUser.deptIds:[currentUser.deptId]).includes(d.id))||DEPTS[0])?.id||'';
+  const dueDate=document.getElementById('qt-due')?.value||'';
+  const id=uid();
+  const statuses=taskStatuses({deptId});
+  const defaultStatus=statuses[0]||'Not Started';
+  await fbSet('tasks/'+id,{
+    id,title:name,clientId:'',deptId,subDeptId:'',
+    status:defaultStatus,priority:'medium',
+    assignees:[assigneeId],
+    startDate:today(),dueDate,
+    createdBy:currentUser.id,createdAt:today(),
+    billingStatus:'pending',billingAmount:0,seconds:0,
+    approvalStatus:'none',isCertificate:false,udins:[]
+  });
+  toast('✓ Task added: '+name);
+  closeModal();
+  render();
+}
+
+
+// ─── Bulk Due Date Extension ─────────────────────────────────────────────
+function bulkDateExtensionHTML(){
+  const count=selectedTasks.size;
+  if(!count) return mHdr('Bulk Due Date Extension')+'<p style="padding:12px">No tasks selected. Use ☑ Select in the task list first.</p>';
+  const tasks=[...selectedTasks].map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
+  const minDue=tasks.reduce((a,t)=>t.dueDate&&(!a||t.dueDate<a)?t.dueDate:a,'');
+  const maxDue=tasks.reduce((a,t)=>t.dueDate&&(!a||t.dueDate>a)?t.dueDate:a,'');
+  return `${mHdr('Bulk Due Date Extension ('+count+' tasks)')}
+  <div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:12px;font-size:11px">
+    <b>Selected tasks:</b><br>
+    ${tasks.slice(0,6).map(t=>'• '+escHtml(t.title)+(t.dueDate?' (due '+fmtDate(t.dueDate)+')':'')).join('<br>')}
+    ${tasks.length>6?`<br>… and ${tasks.length-6} more`:''}
+    ${minDue?`<br><span style="color:var(--text3);margin-top:4px;display:block">Current due range: ${fmtDate(minDue)} → ${fmtDate(maxDue)}</span>`:''}
+  </div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">New Due Date *</label>
+      <input class="form-input" type="date" id="bext-date" min="${today()}"/>
+    </div>
+    <div class="form-row"><label class="form-label">Or extend by days</label>
+      <input class="form-input" type="number" id="bext-days" min="1" placeholder="e.g. 7" oninput="(function(v){if(!v)return;var d=new Date();d.setDate(d.getDate()+parseInt(v));document.getElementById('bext-date').value=d.toISOString().slice(0,10);})(this.value)"/>
+    </div>
+  </div>
+  <div class="form-row"><label class="form-label">Common Reason *</label>
+    <textarea class="form-textarea" id="bext-reason" rows="2" placeholder="Reason for extending all selected tasks…"></textarea>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-primary" style="flex:1" onclick="saveBulkDateExtension()">Extend ${count} Task(s)</button>
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+  </div>`;
+}
+
+async function saveBulkDateExtension(){
+  const newDate=document.getElementById('bext-date')?.value;
+  const reason=(document.getElementById('bext-reason')?.value||'').trim();
+  if(!newDate){toast('Select a new due date');return;}
+  if(!reason){toast('Enter a reason');return;}
+  let count=0;
+  for(const id of selectedTasks){
+    const t=TASKS.find(x=>x.id===id);
+    if(!t) continue;
+    await fbUpd('tasks/'+id,{
+      dueDate:newDate,
+      dateExtensionRequest:{
+        status:'approved',approvedBy:currentUser.id,approvedAt:today(),
+        approvedDate:newDate,originalDueDate:t.dueDate,
+        reason:'[Bulk] '+reason,requestedBy:currentUser.id,requestedAt:today(),requestedDate:newDate
+      }
+    });
+    count++;
+  }
+  selectedTasks=new Set();
+  bulkMode=false;
+  closeModal();
+  toast('✓ Extended due date for '+count+' tasks to '+fmtDate(newDate));
+  render();
+}
+
+
+// ─── Quick Time Entry Tab ────────────────────────────────────────────────
+function quickTimeTab(){
+  if(!window._qtDate) window._qtDate=today();
+  const selDate=window._qtDate;
+  if(!window._qtSearch) window._qtSearch='';
+  // Total logged today
+  const dayTotal=TIME_ENTRIES.filter(function(e){return e.userId===currentUser.id&&e.date===selDate;}).reduce(function(a,e){return a+(e.seconds||0);},0);
+  // My assigned tasks (not terminal)
+  var myTasks2=TASKS.filter(function(t){
+    return !isTaskTerminal(t)&&taskAssignees(t).some(function(a){return a.id===currentUser.id;});
+  });
+  if(window._qtSearch){
+    var q=window._qtSearch.toLowerCase();
+    myTasks2=myTasks2.filter(function(t){
+      return (t.title||'').toLowerCase().includes(q)||(getClient(t.clientId)?.name||'').toLowerCase().includes(q);
+    });
+  }
+  myTasks2.sort(function(a,b){
+    // Tasks with entries today first, then by due date
+    const ae=TIME_ENTRIES.some(function(e){return e.taskId===a.id&&e.date===selDate;})?0:1;
+    const be=TIME_ENTRIES.some(function(e){return e.taskId===b.id&&e.date===selDate;})?0:1;
+    if(ae!==be) return ae-be;
+    return (a.dueDate||'').localeCompare(b.dueDate||'');
+  });
+
+  var taskCards=myTasks2.map(function(t){
+    var todayEntries=TIME_ENTRIES.filter(function(e){return e.taskId===t.id&&e.userId===currentUser.id&&e.date===selDate;});
+    var totalSec=todayEntries.reduce(function(a,e){return a+(e.seconds||0);},0);
+    var client=getClient(t.clientId);
+    var inputId='qt-h-'+t.id;
+    var minId='qt-m-'+t.id;
+    var noteId='qt-n-'+t.id;
+    return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:10px 12px;margin-bottom:8px;border-left:3px solid '+statusColor(t.status)+'">'  
+      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(t.title)+'</div>'
+      +'<div style="font-size:10px;color:var(--text3);margin-top:2px">'+(client?escHtml(client.name)+' · ':'')+getDept(t.deptId)?.name+'</div>'
+      +'</div>'
+      +(totalSec?'<span style="font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:600">'+fmtSec(totalSec)+' today</span>':'')
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +'<input type="number" id="'+inputId+'" min="0" max="23" placeholder="h" style="width:52px;height:30px;font-size:13px;text-align:center;border:1px solid var(--border);border-radius:var(--r);background:var(--bg3);color:var(--text);padding:0 4px"/>'
+      +'<span style="color:var(--text3);font-size:12px">h</span>'
+      +'<input type="number" id="'+minId+'" min="0" max="59" placeholder="m" style="width:52px;height:30px;font-size:13px;text-align:center;border:1px solid var(--border);border-radius:var(--r);background:var(--bg3);color:var(--text);padding:0 4px"/>'
+      +'<span style="color:var(--text3);font-size:12px">m</span>'
+      +'<input type="text" id="'+noteId+'" placeholder="Note (optional)" style="flex:1;min-width:80px;height:30px;font-size:11px;border:1px solid var(--border);border-radius:var(--r);background:var(--bg3);color:var(--text);padding:0 8px"/>'
+      +'<button onclick="quickLogTime(\''+t.id+'\',\''+inputId+'\',\''+minId+'\',\''+noteId+'\')" style="height:30px;padding:0 12px;background:var(--accent);color:#000;border:none;border-radius:var(--r);font-size:12px;font-weight:600;cursor:pointer">+ Log</button>'
+      +'</div>'
+      +(todayEntries.length?'<div style="margin-top:6px;font-size:10px;color:var(--text3)">'+todayEntries.map(function(e){return fmtSec(e.seconds||0)+(e.note?' — '+escHtml(e.note):'');}).join(' · ')+'</div>':'')
+      +'</div>';
+  }).join('');
+
+  return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">'
+    +'<div style="font-size:14px;font-weight:700">Quick Time Entry</div>'
+    +'<input type="date" class="form-input" value="'+selDate+'" style="width:150px;height:32px;font-size:12px;padding:0 8px" onchange="window._qtDate=this.value;render()"/>'
+    +'<div style="font-size:20px;font-weight:700;font-family:var(--mono);color:var(--accent)">'+fmtSec(dayTotal)+'</div>'
+    +'<div style="font-size:11px;color:var(--text3)">logged today</div>'
+    +'</div>'
+    +'<input class="form-input" placeholder="🔍 Search tasks…" value="'+(window._qtSearch||'')+'" oninput="window._qtSearch=this.value;render()" style="margin-bottom:12px;width:100%"/>'
+    +(myTasks2.length?taskCards:'<div style="text-align:center;padding:3rem;color:var(--text3)">No active tasks assigned to you'+(window._qtSearch?' matching your search':'')+'</div>');
+}
+
+async function quickLogTime(taskId, hInputId, mInputId, noteInputId){
+  const hh=parseInt(document.getElementById(hInputId)?.value)||0;
+  const mm=parseInt(document.getElementById(mInputId)?.value)||0;
+  const note=(document.getElementById(noteInputId)?.value||'').trim();
+  const seconds=hh*3600+mm*60;
+  if(seconds<=0){toast('Enter hours or minutes first');return;}
+  // Budget gate
+  const bGate=checkBudgetGate(taskId,seconds);
+  if(bGate?.blocked){toast('⛔ '+bGate.reason);return;}
+  // Overdue gate
+  const gateMsg=checkTimePendingGate(taskId);
+  if(gateMsg){toast(gateMsg);return;}
+  const date=window._qtDate||today();
+  const eid=uid();
+  await fbSet('time_entries/'+eid,{id:eid,taskId,userId:currentUser.id,date,seconds,note});
+  const t=TASKS.find(x=>x.id===taskId);
+  if(t) await fbUpd('tasks/'+taskId,{seconds:(t.seconds||0)+seconds});
+  // Clear inputs
+  const hEl=document.getElementById(hInputId);const mEl=document.getElementById(mInputId);
+  const nEl=document.getElementById(noteInputId);
+  if(hEl) hEl.value=''; if(mEl) mEl.value=''; if(nEl) nEl.value='';
+  toast('✓ '+fmtSec(seconds)+' logged');
+  render();
+}
+
+
+// ─── Workflow Automation Rules ───────────────────────────────────────────
+let WORKFLOW_RULES=[];
+
+// Called after every task status save to check if any rule fires
+async function checkWorkflowRules(taskId, newStatus){
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t) return;
+  for(const rule of WORKFLOW_RULES){
+    if(!rule.active) continue;
+    // Match: trigger conditions
+    if(rule.triggerStatus&&rule.triggerStatus!==newStatus) continue;
+    if(rule.triggerDeptId&&rule.triggerDeptId!==t.deptId) continue;
+    if(rule.triggerSubDeptId&&rule.triggerSubDeptId!==t.subDeptId) continue;
+    // Rule fires — apply actions
+    const updates={};
+    if(rule.actionDeptId) updates.deptId=rule.actionDeptId;
+    if(rule.actionSubDeptId) updates.subDeptId=rule.actionSubDeptId;
+    if(rule.actionStatus) updates.status=rule.actionStatus;
+    if(rule.actionDueDays){
+      const d=new Date();d.setDate(d.getDate()+parseInt(rule.actionDueDays));
+      updates.dueDate=d.toISOString().slice(0,10);
+      updates.startDate=today();
+    }
+    if(rule.actionClearAssignees) updates.assignees=[];
+    if(rule.actionAssignToManager){
+      const deptId=rule.actionDeptId||t.deptId;
+      const mgr=USERS.find(function(u){
+        return u.role==='manager'&&(u.deptId===deptId||(Array.isArray(u.deptIds)&&u.deptIds.includes(deptId)));
+      });
+      if(mgr) updates.assignees=[mgr.id];
+    }
+    await fbUpd('tasks/'+taskId,updates);
+    await logChange(taskId,'workflow_rule','Automation rule "'+rule.name+'" applied');
+    toast('⚙ Rule: '+rule.name);
+  }
+}
+
+function workflowRulesPageHTML(){
+  const depts=DEPTS;
+  const subDepts=SUBDEPTS;
+  const allStatuses=Object.values(STATUSES).flat().filter(function(s,i,a){return a.indexOf(s)===i;});
+  return `<div class="page-header">
+    <div class="page-title">Workflow Rules <span style="font-size:12px;color:var(--text3);font-weight:400">(RPA Automation)</span></div>
+    <button class="btn btn-primary btn-sm" onclick="openModal('newWorkflowRule',{})">+ New Rule</button>
+  </div>
+  <div style="font-size:12px;color:var(--text3);margin-bottom:14px">Rules fire automatically when a task's status changes. Each rule checks its trigger conditions and applies the configured actions.</div>
+  ${WORKFLOW_RULES.length?WORKFLOW_RULES.map(r=>{
+    const tDept=getDept(r.triggerDeptId);
+    const tSD=SUBDEPTS.find(s=>s.id===r.triggerSubDeptId);
+    const aDept=getDept(r.actionDeptId);
+    const aSD=SUBDEPTS.find(s=>s.id===r.actionSubDeptId);
+    return `<div class="card mb-8" style="border-left:3px solid ${r.active?'var(--accent)':'var(--border)'}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${r.name}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">
+            <b>Trigger:</b> Status → <b>${r.triggerStatus||'Any'}</b>
+            ${tDept?' in '+tDept.name:''} ${tSD?'/ '+tSD.name:''}
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">
+            <b>Actions:</b>
+            ${aDept?'→ Move to '+aDept.name:''} ${aSD?'/ '+aSD.name:''}
+            ${r.actionStatus?' · Status: '+r.actionStatus:''}
+            ${r.actionDueDays?' · Due in '+r.actionDueDays+'d':''}
+            ${r.actionClearAssignees?' · Clear assignees':''}
+            ${r.actionAssignToManager?' · Assign to dept manager':''}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;align-items:center">
+          <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer">
+            <input type="checkbox" ${r.active?'checked':''} onchange="toggleWorkflowRule('${r.id}',this.checked)"/>
+            Active
+          </label>
+          <button class="btn btn-ghost btn-xs" onclick="openModal('editWorkflowRule',{id:'${r.id}'})">✎ Edit</button>
+          <button class="btn btn-ghost btn-xs" style="color:var(--red)" onclick="deleteWorkflowRule('${r.id}')">🗑</button>
+        </div>
+      </div>
+    </div>`;
+  }).join(''):'<div style="text-align:center;padding:3rem;color:var(--text3)">No rules yet. Create your first automation rule.</div>'}
+  `;
+}
+
+function newWorkflowRuleHTML(){
+  const depts=DEPTS;
+  const subDepts=SUBDEPTS;
+  const allStatuses=Object.values(STATUSES).flat().filter(function(s,i,a){return a.indexOf(s)===i;});
+  return `${mHdr('New Workflow Rule')}
+  <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin-bottom:8px">Trigger — when this happens</div>
+  <div class="form-row"><label class="form-label">Rule Name *</label>
+    <input class="form-input" id="wr-name" placeholder="e.g. GST filing → Audit dept"/>
+  </div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">When status becomes</label>
+      <select class="form-select" id="wr-trigger-status">
+        <option value="">Any terminal status</option>
+        ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label class="form-label">In department</label>
+      <select class="form-select" id="wr-trigger-dept">
+        <option value="">Any dept</option>
+        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+  <div class="form-row"><label class="form-label">In sub-department</label>
+    <select class="form-select" id="wr-trigger-subdept">
+      <option value="">Any sub-dept</option>
+      ${subDepts.map(s=>`<option value="${s.id}">${getDept(s.deptId)?.name||''} / ${s.name}</option>`).join('')}
+    </select>
+  </div>
+  <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin:12px 0 8px">Actions — then do this</div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Move to department</label>
+      <select class="form-select" id="wr-action-dept">
+        <option value="">Keep current</option>
+        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label class="form-label">Move to sub-department</label>
+      <select class="form-select" id="wr-action-subdept">
+        <option value="">Keep current</option>
+        ${subDepts.map(s=>`<option value="${s.id}">${getDept(s.deptId)?.name||''} / ${s.name}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+  <div class="g2">
+    <div class="form-row"><label class="form-label">Reset status to</label>
+      <select class="form-select" id="wr-action-status">
+        <option value="">Keep current</option>
+        ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-row"><label class="form-label">Set due date (days from today)</label>
+      <input class="form-input" type="number" id="wr-action-duedays" min="0" placeholder="e.g. 7"/>
+    </div>
+  </div>
+  <div class="form-row" style="display:flex;gap:16px;flex-wrap:wrap">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+      <input type="checkbox" id="wr-clear-assignees"/> Remove all current assignees
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+      <input type="checkbox" id="wr-assign-manager"/> Assign to department manager
+    </label>
+  </div>
+  <button class="btn btn-primary w-full" style="margin-top:14px" onclick="saveWorkflowRule()">Save Rule</button>`;
+}
+
+async function saveWorkflowRule(){
+  const name=(document.getElementById('wr-name')?.value||'').trim();
+  if(!name){toast('Enter a rule name');return;}
+  const id=uid();
+  const rule={
+    id,name,active:true,
+    triggerStatus:document.getElementById('wr-trigger-status')?.value||'',
+    triggerDeptId:document.getElementById('wr-trigger-dept')?.value||'',
+    triggerSubDeptId:document.getElementById('wr-trigger-subdept')?.value||'',
+    actionDeptId:document.getElementById('wr-action-dept')?.value||'',
+    actionSubDeptId:document.getElementById('wr-action-subdept')?.value||'',
+    actionStatus:document.getElementById('wr-action-status')?.value||'',
+    actionDueDays:document.getElementById('wr-action-duedays')?.value||'',
+    actionClearAssignees:!!document.getElementById('wr-clear-assignees')?.checked,
+    actionAssignToManager:!!document.getElementById('wr-assign-manager')?.checked,
+    createdBy:currentUser.id,createdAt:today()
+  };
+  await fbSet('workflow_rules/'+id,rule);
+  toast('✓ Rule saved: '+name);
+  closeModal();render();
+}
+async function toggleWorkflowRule(id,active){
+  await fbUpd('workflow_rules/'+id,{active});
+  toast(active?'Rule activated':'Rule paused');
+}
+async function deleteWorkflowRule(id){
+  if(!confirm('Delete this rule?')) return;
+  await fbDel('workflow_rules/'+id);
+  toast('Rule deleted');render();
 }
 
 // ═══════════════════════════════════════
@@ -5940,8 +6436,8 @@ function reportsPage(){
   const isAdmin=role==='superadmin'||role==='manager';
   // Merged: Daily | Week | Month | Range | Performance (admin only)
   const tabs=isAdmin
-    ?['📅 Daily','🗓 Week','📆 Month','🔢 Range','👤 Performance','🚫 No Entry','📊 Timesheet','💰 By Client']
-    :['📅 Daily','🗓 Week','📆 Month','🔢 Range','🚫 No Entry','📊 Timesheet'];
+    ?['📅 Daily','🗓 Week','📆 Month','🔢 Range','👤 Performance','🚫 No Entry','📊 Timesheet','💰 By Client','⚡ Quick Entry']
+    :['📅 Daily','🗓 Week','📆 Month','🔢 Range','🚫 No Entry','📊 Timesheet','⚡ Quick Entry'];
   const content=(()=>{
     if(curTab===0) return dailyTab();
     if(curTab===1) return weekSheet();
@@ -5951,6 +6447,8 @@ function reportsPage(){
     if(curTab===5||(curTab===4&&!isAdmin)) return noEntryTab();
     if(curTab===6||(curTab===5&&!isAdmin)) return weeklyTimesheetTab();
     if(curTab===7&&isAdmin) return billingByClientTab();
+    if(curTab===8&&isAdmin||(curTab===6&&!isAdmin)) return quickTimeTab();
+    if(curTab===7&&!isAdmin) return quickTimeTab();
     return dailyTab();
   })();
   return`<div class="page-header"><div class="page-title">Reports</div></div>
@@ -7155,7 +7653,7 @@ function topBarHTML(){
     ${(()=>{const unread=NOTIFICATIONS.filter(n=>n.userId===currentUser.id&&!n.read).length;return unread?`<span style="position:absolute;top:2px;right:2px;background:var(--red);color:#fff;border-radius:99px;font-size:9px;font-weight:700;padding:1px 4px;min-width:16px;text-align:center">${unread>9?"9+":unread}</span>`:'';})()}
   </div>
   ${activeTimer?`<div class="running-chip" onclick="openModal('taskDetail',{id:'${activeTimer.taskId}'})"><div class="running-dot"></div><span id="chip-t">${fmtTimer(runSec)}</span></div>`:''}
-    ${pendingApprovals?`<div style="background:var(--amber-bg);color:var(--amber);border:1px solid rgba(245,166,35,.25);border-radius:99px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer" onclick="navigate('tasks',2)">⏳ ${pendingApprovals}</div>`:''}
+    ${(pendingApprovals+pendingSignups)?`<div style="background:var(--amber-bg);color:var(--amber);border:1px solid rgba(245,166,35,.25);border-radius:99px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer" onclick="navigate('tasks',2)">⏳ ${pendingApprovals+pendingSignups}</div>`:''}
     <div class="user-pill" onclick="doLogout()" title="Logout">
       <div class="avatar ${avClass(u.id)}" style="width:26px;height:26px;font-size:10px">${initials(u.name)}</div>
       <span class="uname">${shortName(u.name)}</span>
@@ -7252,6 +7750,7 @@ function pageHTML(){
   if(curPage==='reminders-list')return remindersListPage();
   if(curPage==='templates')return templatesPage();
   if(curPage==='settings')return settingsPage();
+  if(curPage==='workflow')return workflowRulesPageHTML();
   return '';
 }
 
@@ -7270,10 +7769,10 @@ function dashPage(){
   }).join('');
 
   if(curTab===0){
-    return'<div class="page-title mb-4">Dashboard</div><div class="tabs">'+tabHtml+'</div>'+overviewDash();
+    return'<div class="page-header" style="margin-bottom:8px"><div class="page-title">Dashboard</div><button class="btn btn-ghost btn-sm" onclick="openModal(\'quickTask\',{})">⚡ Quick Task</button></div><div class="tabs">'+tabHtml+'</div>'+overviewDash();
   }
   if(curTab===1){
-    return'<div class="page-title mb-4">Dashboard</div><div class="tabs">'+tabHtml+'</div>'+dueTodayDash();
+    return'<div class="page-header" style="margin-bottom:8px"><div class="page-title">Dashboard</div><button class="btn btn-ghost btn-sm" onclick="openModal(\'quickTask\',{})">⚡ Quick Task</button></div><div class="tabs">'+tabHtml+'</div>'+dueTodayDash();
   }
   if((role==='superadmin'||role==='manager')&&curTab===2){
     // My Tasks tab - tasks assigned to me + reminders + private
@@ -7430,6 +7929,7 @@ function tasksPage(){
   if(taskFilter.assignees&&taskFilter.assignees.length)tasks=tasks.filter(t=>taskFilter.assignees.some(a=>isAssignedTo(t,a)));
   if(taskFilter.firm&&taskFilter.firm!=='all')tasks=tasks.filter(t=>t.firmId===taskFilter.firm);
   if(taskFilter.exactDate)tasks=tasks.filter(t=>t.dueDate===taskFilter.exactDate);
+  window._filteredTaskIds=tasks.map(t=>t.id); // track for bulk select-all
   if(taskFilter.due==='overdue')tasks=tasks.filter(t=>dueStatus(t.dueDate,t.startDate)==='overdue'&&!isTaskTerminal(t));
   if(taskFilter.due==='week'){const w=new Date();w.setDate(w.getDate()+7);tasks=tasks.filter(t=>t.dueDate&&t.dueDate<=w.toISOString().slice(0,10)&&!isTaskTerminal(t))}
   if(taskFilter.due==='nodue')tasks=tasks.filter(t=>!t.dueDate&&!isTaskTerminal(t));
@@ -7448,8 +7948,22 @@ function tasksPage(){
       <button class="btn btn-ghost btn-sm" onclick="showTaskTime=!showTaskTime;render()" title="Toggle time display">${showTaskTime?'⏱ Hide Time':'⏱ Show Time'}</button>
       <button class="btn btn-ghost btn-sm" onclick="bulkMode=!bulkMode;selectedTasks.clear();render()">${bulkMode?'✕ Cancel':'☑ Select'}</button>
       <button class="btn btn-ghost btn-sm" onclick="openModal('importTasks',{})">⬆ Import</button>
+      <button class="btn btn-ghost btn-sm" onclick="openModal('quickTask',{})" title="Quick add without client/dept">⚡ Quick</button>
       <button class="btn btn-primary btn-sm" onclick="openModal('newTask',{prefill:getNewTaskContext()})">+ New</button>
     </div>
+  </div>
+  <div style="margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <input id="task-name-search" class="form-input" placeholder="🔍 Search tasks by name, client, assignee…"
+        style="flex:1;font-size:13px;height:36px"
+        value="${taskFilter.search||''}"
+        oninput="taskFilter.search=this.value;if(window._searchDebounce)clearTimeout(window._searchDebounce);window._searchDebounce=setTimeout(function(){render();var el=document.getElementById('task-name-search');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}},180)"
+        onkeydown="if(event.key==='Escape'){taskFilter.search='';this.value='';render()}"/>
+      ${taskFilter.search?`<button class="btn btn-ghost btn-xs" onclick="taskFilter.search='';document.getElementById('task-name-search').value='';render()" style="white-space:nowrap">✕ Clear</button>`:''}
+    </div>
+    ${taskFilter.search?`<div style="font-size:11px;color:var(--text3);margin-top:4px;padding-left:2px">
+      Showing tasks matching "<b>${escHtml(taskFilter.search)}</b>"
+    </div>`:''}
   </div>
   <div class="filter-bar" style="flex-wrap:wrap;gap:6px;align-items:center;padding:8px 0">
     ${(()=>{
@@ -7478,7 +7992,17 @@ function tasksPage(){
           <option value="nodue"${taskFilter.due==='nodue'?' selected':''}>⭕ No Due Date</option>
         </select>
         <input type="date" class="form-input" title="Filter by exact due date" style="height:32px;font-size:12px;padding:0 8px;width:140px" value="${taskFilter.exactDate||''}" onchange="taskFilter.exactDate=this.value||'';;taskFilter.due='all';curTab=0;render()"/>`
-      +(hasFilter?`<button class="btn btn-danger btn-sm" onclick="taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',exactDate:'',firm:'all',search:''};curTab=0;render()">✕ Clear</button>`:'');
+      +(hasFilter?`<button class="btn btn-danger btn-sm" onclick="taskFilter={depts:[],subdepts:[],priorities:[],statuses:[],clients:[],assignees:[],due:'all',exactDate:'',firm:'all',search:''};curTab=0;render()">✕ Clear</button>`:'')
+      +(bulkMode&&selectedTasks.size>0?`
+      <div style="display:flex;align-items:center;gap:8px;width:100%;margin-top:8px;padding:8px 10px;background:var(--blue-bg,rgba(59,130,246,.1));border:1px solid var(--blue);border-radius:var(--r);flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:600;color:var(--blue)">${selectedTasks.size} task${selectedTasks.size>1?'s':''} selected</span>
+        <button class="btn btn-ghost btn-xs" onclick="selectAllVisibleTasks()">☑ Select All (${window._filteredTaskIds?.length||0})</button>
+        <button class="btn btn-ghost btn-xs" onclick="selectedTasks.clear();render()">☐ Deselect All</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-sm" style="background:var(--blue-bg);color:var(--blue)" onclick="openModal('bulkEditTasks',{})">✎ Edit Selected</button>
+        <button class="btn btn-sm" style="background:rgba(245,158,11,.12);color:var(--amber)" onclick="openModal('bulkDateExtension',{})">📅 Extend Dates</button>
+        <button class="btn btn-sm" style="background:rgba(239,68,68,.12);color:var(--red)" onclick="bulkDeleteTasks()">🗑 Delete Selected</button>
+      </div>`:'');
     })()}
   </div>
   <div class="tabs">${['All','Active','Approvals','UDIN','Certs','Done','Rejected','🔒 Private'].map((l,i)=>{
@@ -9854,7 +10378,8 @@ function settingsPage(){
   <div class="sett-item" onclick="openModal('settAdminConfig',{})"><div class="sett-icon" style="background:var(--red-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Admin Settings</div><div style="font-size:11px;color:var(--text3)">Leave balances · Time alert threshold</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settFirms',{})"><div class="sett-icon" style="background:var(--gold-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" stroke-linecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Firm Masters</div><div style="font-size:11px;color:var(--text3)">${FIRMS.length} firm${FIRMS.length!==1?'s':''} · logo, GSTIN, letterhead</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settDepts',{})"><div class="sett-icon" style="background:var(--amber-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Departments & Sub-Depts</div><div style="font-size:11px;color:var(--text3)">${DEPTS.length} depts · ${SUBDEPTS.length} sub-depts</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
-  <div class="sett-item" onclick="openModal('settStatuses',{})"><div class="sett-icon" style="background:var(--teal-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Task Statuses</div><div style="font-size:11px;color:var(--text3)">Per sub-department</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+  <div class="sett-item" onclick="openModal('settStatuses',{})"><div class="sett-icon" style="background:var(--teal-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2" stroke-linecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Task Statuses</div><div style="font-size:11px;color:var(--text3)">Per sub-department</div>
+  <div class="sett-item" onclick="navigate('workflow')"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Workflow Rules</div><div style="font-size:11px;color:var(--text3)">RPA automation — auto-assign, move, reset tasks</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('mergeClients',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><circle cx="8" cy="8" r="4"/><circle cx="16" cy="8" r="4"/><path d="M12 8v8M8 16h8"/></svg></div><div class="sett-info"><div class="sett-title">Merge Clients</div><div class="sett-sub">Combine duplicate clients and move all tasks</div></div></div>
   <div class="sett-item" onclick="openModal('settClients',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Clients</div><div style="font-size:11px;color:var(--text3)">${CLIENTS.length} clients</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settRecurring',{})"><div class="sett-icon" style="background:var(--purple-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Recurring Tasks</div><div style="font-size:11px;color:var(--text3)">${RECURRING.length} templates</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
@@ -9898,6 +10423,11 @@ function modalHTML(){
     leaveApply:()=>leaveApplyHTML(),
     clientTaskDetail:()=>clientTaskDetailHTML(data),
     dateExtension:()=>requestDateExtensionHTML(data),
+    bulkEditTasks:()=>bulkEditTasksHTML(),
+    quickTask:()=>quickTaskHTML(),
+    bulkDateExtension:()=>bulkDateExtensionHTML(),
+    newWorkflowRule:()=>newWorkflowRuleHTML(),
+    editWorkflowRule:()=>newWorkflowRuleHTML(),
     billingInvoice:()=>billingInvoiceHTML(data),
     dscOutward:()=>dscOutwardHTML(data),
     dscInward:()=>dscInwardHTML(data),

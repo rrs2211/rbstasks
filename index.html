@@ -5542,7 +5542,12 @@ async function submitClientSignup(){
   const err=document.getElementById('cs-err');
   if(!name||!email){if(err)err.textContent='Name and email are required';return;}
   const reqId=uid();
-  await fbSet('client_signup_requests/'+reqId,{id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
+  try{
+    await db.ref('client_signup_requests/'+reqId).set({id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
+  }catch(e){
+    if(!window._clientSignupRequests) window._clientSignupRequests=[];
+    window._clientSignupRequests.push({id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
+  }
   alert('Your request has been submitted! Admin will review and grant access.');
   renderLogin();
 }
@@ -5560,13 +5565,24 @@ async function approveClientSignup(reqId){
   const userRecord={id:userId,name:req.name,email:req.email,mobile:req.mobile||'',
     role:'client',active:true,clientId:clientId||'',
     pendingPasswordReset:tempPass,createdAt:today()};
-  await fbSet('users/'+userId,userRecord);
-  await fbUpd('client_signup_requests/'+reqId,{status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId});
+  try{
+    await db.ref('users/'+userId).set(userRecord);
+    await db.ref('client_signup_requests/'+reqId).update({status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId});
+  }catch(e){
+    // Update in-memory if Firebase fails
+    const req=(window._clientSignupRequests||[]).find(r=>r.id===reqId);
+    if(req){req.status='approved';req.userId=userId;}
+  }
   toast('✓ Client account created for '+req.name+'. Temporary password: '+tempPass+'. Ask them to log in and change it via Forgot Password.');
   render();
 }
 async function rejectClientSignup(reqId){
-  await fbUpd('client_signup_requests/'+reqId,{status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
+  try{
+    await db.ref('client_signup_requests/'+reqId).update({status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
+  }catch(e){
+    const req=(window._clientSignupRequests||[]).find(r=>r.id===reqId);
+    if(req) req.status='rejected';
+  }
   toast('Client signup request rejected');
   render();
 }
@@ -6060,8 +6076,12 @@ function workflowRulesPageHTML(){
 
 function newWorkflowRuleHTML(){
   const depts=DEPTS;
-  const subDepts=SUBDEPTS;
   const allStatuses=Object.values(STATUSES).flat().filter(function(s,i,a){return a.indexOf(s)===i;});
+  // Helper: render subdept options filtered by deptId
+  function subDeptOpts(deptId,blankLabel){
+    const sds=SUBDEPTS.filter(s=>!deptId||s.deptId===deptId);
+    return '<option value="">'+blankLabel+'</option>'+sds.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('');
+  }
   return `${mHdr('New Workflow Rule')}
   <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin-bottom:8px">Trigger — when this happens</div>
   <div class="form-row"><label class="form-label">Rule Name *</label>
@@ -6070,35 +6090,35 @@ function newWorkflowRuleHTML(){
   <div class="g2">
     <div class="form-row"><label class="form-label">When status becomes</label>
       <select class="form-select" id="wr-trigger-status">
-        <option value="">Any terminal status</option>
+        <option value="">Any status</option>
         ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
       </select>
     </div>
     <div class="form-row"><label class="form-label">In department</label>
-      <select class="form-select" id="wr-trigger-dept">
+      <select class="form-select" id="wr-trigger-dept"
+        onchange="document.getElementById('wr-trigger-subdept').innerHTML=subDeptOptsWR(this.value,'Any sub-dept')">
         <option value="">Any dept</option>
         ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
       </select>
     </div>
   </div>
-  <div class="form-row"><label class="form-label">In sub-department</label>
+  <div class="form-row"><label class="form-label">In sub-department <span style="font-size:10px;color:var(--text3)">(select dept first)</span></label>
     <select class="form-select" id="wr-trigger-subdept">
-      <option value="">Any sub-dept</option>
-      ${subDepts.map(s=>`<option value="${s.id}">${getDept(s.deptId)?.name||''} / ${s.name}</option>`).join('')}
+      ${subDeptOpts('','Any sub-dept')}
     </select>
   </div>
   <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin:12px 0 8px">Actions — then do this</div>
   <div class="g2">
     <div class="form-row"><label class="form-label">Move to department</label>
-      <select class="form-select" id="wr-action-dept">
+      <select class="form-select" id="wr-action-dept"
+        onchange="document.getElementById('wr-action-subdept').innerHTML=subDeptOptsWR(this.value,'Keep current sub-dept')">
         <option value="">Keep current</option>
         ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
       </select>
     </div>
     <div class="form-row"><label class="form-label">Move to sub-department</label>
       <select class="form-select" id="wr-action-subdept">
-        <option value="">Keep current</option>
-        ${subDepts.map(s=>`<option value="${s.id}">${getDept(s.deptId)?.name||''} / ${s.name}</option>`).join('')}
+        ${subDeptOpts('','Keep current')}
       </select>
     </div>
   </div>
@@ -6141,18 +6161,150 @@ async function saveWorkflowRule(){
     actionAssignToManager:!!document.getElementById('wr-assign-manager')?.checked,
     createdBy:currentUser.id,createdAt:today()
   };
-  await fbSet('workflow_rules/'+id,rule);
-  toast('✓ Rule saved: '+name);
+  // Use Firebase directly (bypasses _isFile localStorage fallback)
+  try{
+    await db.ref('workflow_rules/'+id).set(rule);
+    toast('✓ Rule saved: '+name);
+  } catch(e){
+    WORKFLOW_RULES=[...WORKFLOW_RULES.filter(r=>r.id!==id),rule];
+    toast('✓ Rule saved locally (will sync on next load)');
+  }
   closeModal();render();
 }
 async function toggleWorkflowRule(id,active){
-  await fbUpd('workflow_rules/'+id,{active});
+  try{await db.ref('workflow_rules/'+id+'/active').set(active);}catch(e){const r=WORKFLOW_RULES.find(x=>x.id===id);if(r)r.active=active;}
   toast(active?'Rule activated':'Rule paused');
 }
 async function deleteWorkflowRule(id){
   if(!confirm('Delete this rule?')) return;
-  await fbDel('workflow_rules/'+id);
+  try{await db.ref('workflow_rules/'+id).remove();}catch(e){WORKFLOW_RULES=WORKFLOW_RULES.filter(r=>r.id!==id);}
   toast('Rule deleted');render();
+}
+
+
+function subDeptOptsWR(deptId,blankLabel){
+  const sds=SUBDEPTS.filter(function(s){return !deptId||s.deptId===deptId;});
+  return '<option value="">'+blankLabel+'</option>'+sds.map(function(s){return '<option value="'+s.id+'">'+s.name+'</option>';}).join('');
+}
+
+
+// ─── Export Tasks to PDF ──────────────────────────────────────────────────
+function exportTasksPDF(){
+  // Use the SAME filter pipeline as tasksPage so export = exactly what's on screen
+  let tasks = myTasks();
+  if(taskFilter.depts&&taskFilter.depts.length)         tasks=tasks.filter(t=>taskFilter.depts.includes(t.deptId));
+  if(taskFilter.subdepts&&taskFilter.subdepts.length)   tasks=tasks.filter(t=>taskFilter.subdepts.includes(t.subDeptId));
+  if(taskFilter.clients&&taskFilter.clients.length)     tasks=tasks.filter(t=>taskFilter.clients.includes(t.clientId));
+  if(taskFilter.priorities&&taskFilter.priorities.length) tasks=tasks.filter(t=>taskFilter.priorities.includes(t.priority));
+  if(taskFilter.statuses&&taskFilter.statuses.length)   tasks=tasks.filter(t=>taskFilter.statuses.includes(t.status));
+  if(taskFilter.assignees&&taskFilter.assignees.length) tasks=tasks.filter(t=>taskFilter.assignees.some(a=>isAssignedTo(t,a)));
+  if(taskFilter.firm&&taskFilter.firm!=='all')          tasks=tasks.filter(t=>t.firmId===taskFilter.firm);
+  if(taskFilter.exactDate)                              tasks=tasks.filter(t=>t.dueDate===taskFilter.exactDate);
+  else if(taskFilter.due==='overdue') tasks=tasks.filter(t=>dueStatus(t.dueDate,t.startDate)==='overdue'&&!isTaskTerminal(t));
+  else if(taskFilter.due==='week'){const w=new Date();w.setDate(w.getDate()+7);tasks=tasks.filter(t=>t.dueDate&&t.dueDate<=w.toISOString().slice(0,10)&&!isTaskTerminal(t));}
+  else if(taskFilter.due==='nodue') tasks=tasks.filter(t=>!t.dueDate);
+  if(taskFilter.search&&taskFilter.search.trim()){const sq=taskFilter.search.toLowerCase().trim();tasks=tasks.filter(t=>(t.title||'').toLowerCase().includes(sq)||(getClient(t.clientId)?.name||'').toLowerCase().includes(sq));}
+  if(!showClosedBilled) tasks=tasks.filter(t=>!isTaskTerminal(t));
+  tasks=applyTaskSort(tasks);
+
+  const firm=getActiveFirm()?.name||'R B Shah & Associates';
+  const now=new Date().toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  // Build filter description
+  const filterParts=[];
+  if(taskFilter.search) filterParts.push('Search: "'+taskFilter.search+'"');
+  if(taskFilter.due&&taskFilter.due!=='all') filterParts.push('Due: '+taskFilter.due);
+  if(taskFilter.exactDate) filterParts.push('Due date: '+fmtDate(taskFilter.exactDate));
+  if(taskFilter.depts.length) filterParts.push('Dept: '+taskFilter.depts.map(id=>getDept(id)?.name||id).join(', '));
+  if(taskFilter.statuses.length) filterParts.push('Status: '+taskFilter.statuses.join(', '));
+  if(taskFilter.priorities.length) filterParts.push('Priority: '+taskFilter.priorities.join(', '));
+  if(taskFilter.assignees.length) filterParts.push('Assignee: '+taskFilter.assignees.map(id=>getUser(id)?.name||id).join(', '));
+  const filterDesc=filterParts.length?filterParts.join(' · '):'All Tasks';
+
+  const rows=tasks.map((t,i)=>{
+    const client=getClient(t.clientId);
+    const dept=getDept(t.deptId);
+    const sd=SUBDEPTS.find(s=>s.id===t.subDeptId);
+    const assignees=taskAssignees(t).map(u=>u.name).join(', ');
+    const timeStr=t.seconds?fmtSec(t.seconds):'';
+    const priDot=t.priority==='urgent'?'#ef4444':t.priority==='high'?'#f97316':t.priority==='medium'?'#eab308':'#4ade80';
+    return '<tr>'
+      +'<td style="padding:6px 8px;text-align:center;color:#6b7280;font-size:10px">'+(i+1)+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;font-weight:500;max-width:220px;word-wrap:break-word">'+escHtml(t.title||'')+'</td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#374151">'+escHtml(client?.name||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#374151">'+escHtml(dept?.name||'—')+(sd?'<br><span style="color:#9ca3af">'+escHtml(sd.name)+'</span>':'')+'</td>'
+      +'<td style="padding:6px 8px"><span style="display:inline-flex;align-items:center;gap:4px;font-size:10px"><span style="width:7px;height:7px;border-radius:50%;background:'+priDot+';display:inline-block"></span>'+escHtml(t.status||'')+'</span></td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#374151">'+escHtml(assignees||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#374151;text-align:center">'+escHtml(fmtDate(t.dueDate)||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#6b7280;text-align:center">'+timeStr+'</td>'
+      +'<td style="padding:6px 8px;min-width:120px;border-left:1px dashed #d1d5db">&nbsp;</td>'
+      +'</tr>';
+  }).join('');
+
+  const html=`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<title>Task Export — ${firm}</title>
+<style>
+  @page{size:A4 landscape;margin:14mm 12mm}
+  body{font-family:Arial,sans-serif;font-size:11px;color:#111;margin:0;padding:0}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #111}
+  .firm{font-size:16px;font-weight:700}
+  .meta{font-size:10px;color:#6b7280;margin-top:3px}
+  .filter-bar{font-size:10px;color:#374151;background:#f3f4f6;border-radius:4px;padding:4px 8px;margin-bottom:10px}
+  table{width:100%;border-collapse:collapse;font-size:10px}
+  thead tr{background:#111;color:#fff}
+  thead th{padding:7px 8px;text-align:left;font-size:10px;font-weight:600;white-space:nowrap}
+  tbody tr:nth-child(even){background:#f9fafb}
+  tbody tr{border-bottom:1px solid #e5e7eb}
+  tbody td{vertical-align:top}
+  .blank-col{background:#fefce8}
+  .footer{margin-top:10px;font-size:9px;color:#9ca3af;text-align:right}
+  @media print{button{display:none}}
+</style>
+</head>
+<body>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+  <button onclick="window.print()" style="padding:7px 18px;background:#111;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer">🖨 Print / Save PDF</button>
+  <button onclick="window.close()" style="padding:7px 14px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:4px;font-size:11px;cursor:pointer">✕ Close</button>
+</div>
+<div class="header">
+  <div>
+    <div class="firm">${firm}</div>
+    <div class="meta">Task Report · Exported on ${now}</div>
+  </div>
+  <div style="text-align:right;font-size:10px;color:#6b7280">
+    ${tasks.length} task(s) shown
+  </div>
+</div>
+<div class="filter-bar">Filter: ${filterDesc}</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:28px">#</th>
+      <th style="width:220px">Task Name</th>
+      <th style="width:130px">Client</th>
+      <th style="width:110px">Dept / Sub</th>
+      <th style="width:100px">Status</th>
+      <th style="width:130px">Assignee(s)</th>
+      <th style="width:75px;text-align:center">Due Date</th>
+      <th style="width:55px;text-align:center">Time</th>
+      <th class="blank-col" style="min-width:120px">Remarks / Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${rows||'<tr><td colspan="9" style="padding:20px;text-align:center;color:#9ca3af">No tasks match the current filter</td></tr>'}
+  </tbody>
+</table>
+<div class="footer">Generated by TaskHub by RB · ${firm} · ${now}</div>
+</body>
+</html>`;
+
+  const win=window.open('','_blank','width=1050,height=750');
+  if(!win){toast('Allow pop-ups to export PDF');return;}
+  win.document.write(html);
+  win.document.close();
 }
 
 // ═══════════════════════════════════════
@@ -7948,6 +8100,7 @@ function tasksPage(){
       <button class="btn btn-ghost btn-sm" onclick="showTaskTime=!showTaskTime;render()" title="Toggle time display">${showTaskTime?'⏱ Hide Time':'⏱ Show Time'}</button>
       <button class="btn btn-ghost btn-sm" onclick="bulkMode=!bulkMode;selectedTasks.clear();render()">${bulkMode?'✕ Cancel':'☑ Select'}</button>
       <button class="btn btn-ghost btn-sm" onclick="openModal('importTasks',{})">⬆ Import</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportTasksPDF()" title="Export current view to PDF">⬇ PDF</button>
       <button class="btn btn-ghost btn-sm" onclick="openModal('quickTask',{})" title="Quick add without client/dept">⚡ Quick</button>
       <button class="btn btn-primary btn-sm" onclick="openModal('newTask',{prefill:getNewTaskContext()})">+ New</button>
     </div>

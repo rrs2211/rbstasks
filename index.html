@@ -819,6 +819,7 @@ document.addEventListener('keydown',(e)=>{
     case 'x': navigate('dsc');break; // X = DSC
     case 's': if(!modalState){openSearchPortal();return;}break;
     case 'n': openModal('newTask',{prefill:getNewTaskContext()});break;
+    case 'e': if(searchQuery.toLowerCase().includes('send report')||searchQuery.toLowerCase().includes('email report')){sendDeptTaskReportEmail();searchQuery='';searchOpen=false;render();}break;
     case 'c': navigate('clients');break;
     case 'k': navigate('certs');break;
     case 'm': navigate('chat');break;
@@ -6076,72 +6077,115 @@ function workflowRulesPageHTML(){
 
 function newWorkflowRuleHTML(){
   const depts=DEPTS;
-  const allStatuses=Object.values(STATUSES).flat().filter(function(s,i,a){return a.indexOf(s)===i;});
-  // Helper: render subdept options filtered by deptId
-  function subDeptOpts(deptId,blankLabel){
-    const sds=SUBDEPTS.filter(s=>!deptId||s.deptId===deptId);
-    return '<option value="">'+blankLabel+'</option>'+sds.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('');
-  }
   return `${mHdr('New Workflow Rule')}
-  <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin-bottom:8px">Trigger — when this happens</div>
-  <div class="form-row"><label class="form-label">Rule Name *</label>
-    <input class="form-input" id="wr-name" placeholder="e.g. GST filing → Audit dept"/>
+  <div class="form-row" style="margin-bottom:14px"><label class="form-label">Rule Name *</label>
+    <input class="form-input" id="wr-name" placeholder="e.g. GST Filing Done → Audit dept"/>
   </div>
-  <div class="g2">
-    <div class="form-row"><label class="form-label">When status becomes</label>
+
+  <div style="background:var(--bg3);border-radius:var(--r2);padding:12px;margin-bottom:10px;border-left:3px solid var(--amber)">
+    <div style="font-weight:700;font-size:11px;text-transform:uppercase;color:var(--amber);letter-spacing:1px;margin-bottom:10px">⚡ Trigger — when this happens</div>
+
+    <div class="form-row"><label class="form-label">1 · Department</label>
+      <select class="form-select" id="wr-trigger-dept" onchange="wrUpdateTriggerSubDept()">
+        <option value="">Select department…</option>
+        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="form-row"><label class="form-label">2 · Sub-department <span style="font-size:10px;color:var(--text3)">(select dept first)</span></label>
+      <select class="form-select" id="wr-trigger-subdept" onchange="wrUpdateTriggerStatus()">
+        <option value="">Select sub-department…</option>
+      </select>
+    </div>
+
+    <div class="form-row" style="margin-bottom:0"><label class="form-label">3 · Status becomes <span style="font-size:10px;color:var(--text3)">(select sub-dept first)</span></label>
       <select class="form-select" id="wr-trigger-status">
         <option value="">Any status</option>
-        ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-row"><label class="form-label">In department</label>
-      <select class="form-select" id="wr-trigger-dept"
-        onchange="document.getElementById('wr-trigger-subdept').innerHTML=subDeptOptsWR(this.value,'Any sub-dept')">
-        <option value="">Any dept</option>
-        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
       </select>
     </div>
   </div>
-  <div class="form-row"><label class="form-label">In sub-department <span style="font-size:10px;color:var(--text3)">(select dept first)</span></label>
-    <select class="form-select" id="wr-trigger-subdept">
-      ${subDeptOpts('','Any sub-dept')}
-    </select>
-  </div>
-  <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:var(--text3);letter-spacing:1px;margin:12px 0 8px">Actions — then do this</div>
-  <div class="g2">
-    <div class="form-row"><label class="form-label">Move to department</label>
-      <select class="form-select" id="wr-action-dept"
-        onchange="document.getElementById('wr-action-subdept').innerHTML=subDeptOptsWR(this.value,'Keep current sub-dept')">
-        <option value="">Keep current</option>
-        ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
-      </select>
+
+  <div style="background:var(--bg3);border-radius:var(--r2);padding:12px;border-left:3px solid var(--accent)">
+    <div style="font-weight:700;font-size:11px;text-transform:uppercase;color:var(--accent);letter-spacing:1px;margin-bottom:10px">→ Actions — then do this</div>
+
+    <div class="g2">
+      <div class="form-row"><label class="form-label">Move to department</label>
+        <select class="form-select" id="wr-action-dept" onchange="wrUpdateActionSubDept()">
+          <option value="">Keep current dept</option>
+          ${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Move to sub-department</label>
+        <select class="form-select" id="wr-action-subdept" onchange="wrUpdateActionStatus()">
+          <option value="">Keep current sub-dept</option>
+        </select>
+      </div>
     </div>
-    <div class="form-row"><label class="form-label">Move to sub-department</label>
-      <select class="form-select" id="wr-action-subdept">
-        ${subDeptOpts('','Keep current')}
-      </select>
+
+    <div class="g2">
+      <div class="form-row"><label class="form-label">Reset status to <span style="font-size:10px;color:var(--text3)">(of destination)</span></label>
+        <select class="form-select" id="wr-action-status">
+          <option value="">Keep current status</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Set due date (days from today)</label>
+        <input class="form-input" type="number" id="wr-action-duedays" min="0" placeholder="e.g. 7"/>
+      </div>
+    </div>
+
+    <div class="form-row" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:0">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+        <input type="checkbox" id="wr-clear-assignees"/> Remove all current assignees
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
+        <input type="checkbox" id="wr-assign-manager"/> Assign to destination dept manager
+      </label>
     </div>
   </div>
-  <div class="g2">
-    <div class="form-row"><label class="form-label">Reset status to</label>
-      <select class="form-select" id="wr-action-status">
-        <option value="">Keep current</option>
-        ${allStatuses.map(s=>`<option value="${s}">${s}</option>`).join('')}
-      </select>
-    </div>
-    <div class="form-row"><label class="form-label">Set due date (days from today)</label>
-      <input class="form-input" type="number" id="wr-action-duedays" min="0" placeholder="e.g. 7"/>
-    </div>
-  </div>
-  <div class="form-row" style="display:flex;gap:16px;flex-wrap:wrap">
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
-      <input type="checkbox" id="wr-clear-assignees"/> Remove all current assignees
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px">
-      <input type="checkbox" id="wr-assign-manager"/> Assign to department manager
-    </label>
-  </div>
+
   <button class="btn btn-primary w-full" style="margin-top:14px" onclick="saveWorkflowRule()">Save Rule</button>`;
+}
+
+// Cascade helpers called from inline onchange
+function wrUpdateTriggerSubDept(){
+  const deptId=document.getElementById('wr-trigger-dept')?.value||'';
+  const sds=SUBDEPTS.filter(function(s){return !deptId||s.deptId===deptId;});
+  const el=document.getElementById('wr-trigger-subdept');
+  if(!el) return;
+  el.innerHTML='<option value="">Select sub-department…</option>'
+    +sds.map(function(s){return '<option value="'+s.id+'">'+s.name+'</option>';}).join('');
+  // Reset dependent status
+  const sel=document.getElementById('wr-trigger-status');
+  if(sel) sel.innerHTML='<option value="">Any status</option>';
+}
+function wrUpdateTriggerStatus(){
+  const sdId=document.getElementById('wr-trigger-subdept')?.value||'';
+  const deptId=document.getElementById('wr-trigger-dept')?.value||'';
+  const statuses=sdStatuses(sdId,deptId);
+  const el=document.getElementById('wr-trigger-status');
+  if(!el) return;
+  el.innerHTML='<option value="">Any status in this sub-dept</option>'
+    +statuses.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('');
+}
+function wrUpdateActionSubDept(){
+  const deptId=document.getElementById('wr-action-dept')?.value||'';
+  const sds=SUBDEPTS.filter(function(s){return !deptId||s.deptId===deptId;});
+  const el=document.getElementById('wr-action-subdept');
+  if(!el) return;
+  el.innerHTML='<option value="">Keep current sub-dept</option>'
+    +sds.map(function(s){return '<option value="'+s.id+'">'+s.name+'</option>';}).join('');
+  // Reset status
+  const sel=document.getElementById('wr-action-status');
+  if(sel) sel.innerHTML='<option value="">Keep current status</option>';
+}
+function wrUpdateActionStatus(){
+  const sdId=document.getElementById('wr-action-subdept')?.value||'';
+  const deptId=document.getElementById('wr-action-dept')?.value||'';
+  const statuses=sdStatuses(sdId,deptId);
+  const el=document.getElementById('wr-action-status');
+  if(!el) return;
+  el.innerHTML='<option value="">Keep current status</option>'
+    +statuses.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('');
 }
 
 async function saveWorkflowRule(){
@@ -6305,6 +6349,102 @@ function exportTasksPDF(){
   if(!win){toast('Allow pop-ups to export PDF');return;}
   win.document.write(html);
   win.document.close();
+}
+
+
+// ─── Department-wise Task Report Email ──────────────────────────────────────
+function buildDeptTaskReportHTML(tasks, firm, generatedAt){
+  // Group tasks by department
+  const byDept={};
+  tasks.forEach(function(t){
+    const dept=getDept(t.deptId);
+    const key=dept?dept.name:'Unassigned';
+    if(!byDept[key]) byDept[key]=[];
+    byDept[key].push(t);
+  });
+
+  const priDot=function(p){return p==='urgent'?'#ef4444':p==='high'?'#f97316':p==='medium'?'#eab308':'#4ade80';};
+
+  const deptSections=Object.entries(byDept).sort(function(a,b){return a[0].localeCompare(b[0]);}).map(function(kv){
+    const deptName=kv[0], deptTasks=kv[1];
+    const rows=deptTasks.map(function(t,i){
+      const client=getClient(t.clientId);
+      const sd=SUBDEPTS.find(function(s){return s.id===t.subDeptId;});
+      const assignees=taskAssignees(t).map(function(u){return u.name;}).join(', ');
+      const isOverdue=t.dueDate&&t.dueDate<today()&&!isTaskTerminal(t);
+      return '<tr style="background:'+(i%2===0?'#fff':'#f9fafb')+'">'
+        +'<td style="padding:6px 10px;font-size:11px;font-weight:500;max-width:200px">'+escHtml(t.title||'')+'</td>'
+        +'<td style="padding:6px 10px;font-size:10px;color:#374151">'+escHtml(client?.name||'—')+'</td>'
+        +'<td style="padding:6px 10px;font-size:10px;color:#374151">'+escHtml(sd?.name||'—')+'</td>'
+        +'<td style="padding:6px 10px;font-size:10px">'
+          +'<span style="display:inline-flex;align-items:center;gap:3px">'
+          +'<span style="width:6px;height:6px;border-radius:50%;background:'+priDot(t.priority||'medium')+';display:inline-block;flex-shrink:0"></span>'
+          +escHtml(t.status||'')+'</span></td>'
+        +'<td style="padding:6px 10px;font-size:10px;color:#374151">'+escHtml(assignees||'—')+'</td>'
+        +'<td style="padding:6px 10px;font-size:10px;text-align:center;color:'+(isOverdue?'#ef4444':'#374151')+';font-weight:'+(isOverdue?'700':'400')+'">'+escHtml(fmtDate(t.dueDate)||'—')+(isOverdue?' ⚠':'')+'</td>'
+        +'<td style="padding:6px 10px;min-width:100px;background:#fefce8">&nbsp;</td>'
+        +'</tr>';
+    }).join('');
+
+    const overdue=deptTasks.filter(function(t){return t.dueDate&&t.dueDate<today()&&!isTaskTerminal(t);}).length;
+
+    return '<div style="margin-bottom:28px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;background:#1a1a2e;color:#fff;padding:8px 12px;border-radius:6px 6px 0 0">'
+      +'<span style="font-size:13px;font-weight:700;letter-spacing:.3px">'+escHtml(deptName)+'</span>'
+      +'<span style="font-size:10px;color:#a5b4fc">'+deptTasks.length+' tasks'+(overdue?' · <span style="color:#fca5a5">'+overdue+' overdue</span>':'')+'</span>'
+      +'</div>'
+      +'<table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-top:none">'
+      +'<thead><tr style="background:#f3f4f6">'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Task</th>'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Client</th>'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Sub-dept</th>'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Status</th>'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Assignee(s)</th>'
+      +'<th style="padding:6px 10px;text-align:center;font-size:10px;color:#6b7280;font-weight:600;border-bottom:1px solid #e5e7eb">Due</th>'
+      +'<th style="padding:6px 10px;text-align:left;font-size:10px;color:#a16207;font-weight:600;border-bottom:1px solid #e5e7eb;background:#fefce8">Remarks</th>'
+      +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+  }).join('');
+
+  const totalTasks=tasks.length;
+  const totalOverdue=tasks.filter(function(t){return t.dueDate&&t.dueDate<today()&&!isTaskTerminal(t);}).length;
+
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Task Report</title></head><body style="font-family:Arial,sans-serif;margin:0;padding:0;background:#f3f4f6">'
+    +'<div style="max-width:900px;margin:0 auto;background:#fff;padding:24px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #1a1a2e">'
+    +'<div><div style="font-size:18px;font-weight:800;color:#1a1a2e">'+escHtml(firm)+'</div>'
+    +'<div style="font-size:11px;color:#6b7280;margin-top:3px">Department-wise Task Report · '+escHtml(generatedAt)+'</div></div>'
+    +'<div style="text-align:right;font-size:11px">'
+    +'<div style="font-size:20px;font-weight:800;color:#1a1a2e">'+totalTasks+'</div>'
+    +'<div style="color:#6b7280">tasks</div>'
+    +(totalOverdue?'<div style="color:#ef4444;font-weight:600;margin-top:4px">'+totalOverdue+' overdue ⚠</div>':'')
+    +'</div></div>'
+    +deptSections
+    +'<div style="margin-top:16px;font-size:9px;color:#9ca3af;text-align:right;border-top:1px solid #e5e7eb;padding-top:8px">Generated by TaskHub by RB · '+escHtml(firm)+' · '+escHtml(generatedAt)+'</div>'
+    +'</div></body></html>';
+}
+
+async function sendDeptTaskReportEmail(){
+  const cfg=EMAILJS_CFG||{};
+  if(!cfg.gasUrl){toast('⚠ Email not configured. Go to Settings → Email Config first.');return;}
+  const adminUser=USERS.find(function(u){return u.id===currentUser.id;});
+  const toEmail=adminUser?.email||currentUser?.email||'';
+  if(!toEmail){toast('⚠ Your account has no email address set.');return;}
+
+  const firm=getActiveFirm()?.name||'R B Shah & Associates';
+  const now=new Date().toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  // Send ALL active tasks (not filtered)
+  const tasks=myTasks().filter(function(t){return !isTaskTerminal(t);});
+  const htmlBody=buildDeptTaskReportHTML(tasks,firm,now);
+
+  toast('Sending department report to '+toEmail+'…');
+  const ok=await sendEmailBCC([toEmail],
+    firm+' — Department-wise Task Report ('+now+')',
+    'Please find the department-wise task report attached below.',
+    htmlBody
+  );
+  if(ok) toast('✓ Report sent to '+toEmail);
+  else    toast('✗ Failed to send. Check email config in Settings.');
 }
 
 // ═══════════════════════════════════════
@@ -7791,7 +7931,7 @@ function topBarHTML(){
     </div>
     <div class="search-wrap">
       <svg class="search-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input class="search-input" id="search-inp" placeholder="Search tasks, clients…" value="${searchQuery}" oninput="searchQuery=this.value;searchOpen=true;render()" onfocus="searchOpen=true;" onblur="setTimeout(()=>{if(!document.querySelector('.sr-item:hover')){searchOpen=false;searchQuery='';render();}},150)" onkeydown="if(event.key==='Enter'&&searchQuery){const r=doSearch(searchQuery);if(r.length===0){toast('No results: '+searchQuery);}else if(r.length===1){searchOpen=false;searchQuery='';openModal('taskDetail',{id:r[0].id});render();}else{const q=searchQuery;searchOpen=false;searchQuery='';navigate('tasks');setTimeout(()=>{taskFilter.search=q;render();},50);}}"/>
+      <input class="search-input" id="search-inp" placeholder="Search tasks, clients…" value="${searchQuery}" oninput="searchQuery=this.value;searchOpen=true;if(this.value.toLowerCase()=='send report'||this.value.toLowerCase()=='email report'){sendDeptTaskReportEmail();this.value='';searchQuery='';searchOpen=false;render();}else render()" onfocus="searchOpen=true;" onblur="setTimeout(()=>{if(!document.querySelector('.sr-item:hover')){searchOpen=false;searchQuery='';render();}},150)" onkeydown="if(event.key==='Enter'&&searchQuery){const r=doSearch(searchQuery);if(r.length===0){toast('No results: '+searchQuery);}else if(r.length===1){searchOpen=false;searchQuery='';openModal('taskDetail',{id:r[0].id});render();}else{const q=searchQuery;searchOpen=false;searchQuery='';navigate('tasks');setTimeout(()=>{taskFilter.search=q;render();},50);}}"/>
       ${searchOpen&&searchRes.length?`<div class="search-results">${searchRes.map(r=>`<div class="sr-item" data-sr-id="${r.id}" style="cursor:pointer">
         <div style="width:6px;height:6px;border-radius:50%;background:${r.dc};flex-shrink:0"></div>
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${hl(r.title,searchQuery)}</div><div style="font-size:10px;color:var(--text3)">${r.client} · ${r.status}</div></div>
@@ -8101,6 +8241,7 @@ function tasksPage(){
       <button class="btn btn-ghost btn-sm" onclick="bulkMode=!bulkMode;selectedTasks.clear();render()">${bulkMode?'✕ Cancel':'☑ Select'}</button>
       <button class="btn btn-ghost btn-sm" onclick="openModal('importTasks',{})">⬆ Import</button>
       <button class="btn btn-ghost btn-sm" onclick="exportTasksPDF()" title="Export current view to PDF">⬇ PDF</button>
+      <button class="btn btn-ghost btn-sm" onclick="sendDeptTaskReportEmail()" title="Email department-wise task report to yourself">📧 Email Report</button>
       <button class="btn btn-ghost btn-sm" onclick="openModal('quickTask',{})" title="Quick add without client/dept">⚡ Quick</button>
       <button class="btn btn-primary btn-sm" onclick="openModal('newTask',{prefill:getNewTaskContext()})">+ New</button>
     </div>

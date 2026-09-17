@@ -6437,14 +6437,20 @@ async function sendDeptTaskReportEmail(){
   const tasks=myTasks().filter(function(t){return !isTaskTerminal(t);});
   const htmlBody=buildDeptTaskReportHTML(tasks,firm,now);
 
+  // Also open the print window so user can save PDF immediately
+  const win=window.open('','_blank','width=1050,height=750');
+  if(win){win.document.write(htmlBody);win.document.close();}
+
   toast('Sending department report to '+toEmail+'…');
+  // Gmail clips emails > 102KB — strip excessive whitespace from HTML
+  const compactHtml=htmlBody.replace(/\n\s*/g,' ').replace(/\s{2,}/g,' ');
   const ok=await sendEmailBCC([toEmail],
     firm+' — Department-wise Task Report ('+now+')',
-    'Please find the department-wise task report attached below.',
-    htmlBody
+    'Your department-wise task report is shown below. '+tasks.length+' active tasks across '+Object.keys(DEPTS).length+' departments. Generated '+now+'.',
+    compactHtml
   );
-  if(ok) toast('✓ Report sent to '+toEmail);
-  else    toast('✗ Failed to send. Check email config in Settings.');
+  if(ok) toast('✓ Report emailed to '+toEmail+' · Print window opened to save PDF');
+  else    toast('✗ Email failed — use the print window to save PDF');
 }
 
 // ═══════════════════════════════════════
@@ -7280,11 +7286,13 @@ async function sendEmailBCC(emails,subject,body,prebuiltHtml){
       // Use pre-built HTML if provided (e.g. table-formatted reports), otherwise build from text
       var htmlBody=prebuiltHtml||buildHtmlEmail(subject,body,firm,logoUrl);
       var p=new URLSearchParams({
-        to:emails[0],  // primary recipient
-        bcc:emails.slice(1).join(','), // rest as BCC
+        to:emails[0],
+        bcc:emails.slice(1).join(','),
         subject:subject,
         body:body,
         htmlBody:htmlBody,
+        attachHtmlAsPdf:htmlBody&&htmlBody.length>500?'1':'',  // ask GAS to attach as PDF
+        pdfFileName:subject.replace(/[^a-zA-Z0-9 _-]/g,'_').slice(0,60)+'.pdf',
         fromName:firm,
         replyTo:cfg.replyTo||FIRM_EMAIL||'',
         key:cfg.gasKey||''

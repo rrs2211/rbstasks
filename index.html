@@ -930,7 +930,25 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
   db.ref('leaves').on('value',s=>{LEAVES=s.val()?Object.values(s.val()):[];render();});
   db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];});
-  db.ref('workflow_rules').on('value',s=>{WORKFLOW_RULES=s.val()?Object.values(s.val()):[];});
+  db.ref('workflow_rules').on('value',function(s){
+    var fromFirebase=s.val()?Object.values(s.val()):[];
+    if(fromFirebase.length>0){
+      WORKFLOW_RULES=fromFirebase;
+      // Keep localStorage in sync
+      try{localStorage.setItem('tf7_workflow_rules',JSON.stringify(WORKFLOW_RULES));}catch(_){}
+    } else {
+      // Firebase empty — load from localStorage backup
+      try{
+        var local=JSON.parse(localStorage.getItem('tf7_workflow_rules')||'[]');
+        if(local.length>0){
+          WORKFLOW_RULES=local;
+          // Try to push local rules back to Firebase
+          local.forEach(function(r){db.ref('workflow_rules/'+r.id).set(r).catch(function(){});});
+        }
+      } catch(_){}
+    }
+    render();
+  });
   db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
   db.ref('dsc_records').on('value',s=>{
     DSC_RECORDS=objToArr(s.val()||{});
@@ -6205,23 +6223,41 @@ async function saveWorkflowRule(){
     actionAssignToManager:!!document.getElementById('wr-assign-manager')?.checked,
     createdBy:currentUser.id,createdAt:today()
   };
-  // Use Firebase directly (bypasses _isFile localStorage fallback)
+  // Try Firebase first (works when authenticated + online)
+  var savedToFirebase=false;
   try{
     await db.ref('workflow_rules/'+id).set(rule);
+    savedToFirebase=true;
     toast('✓ Rule saved: '+name);
   } catch(e){
-    WORKFLOW_RULES=[...WORKFLOW_RULES.filter(r=>r.id!==id),rule];
-    toast('✓ Rule saved locally (will sync on next load)');
+    console.warn('Firebase workflow_rules save failed:',e);
+  }
+  // Always save to localStorage as persistent backup
+  try{
+    var existing=JSON.parse(localStorage.getItem('tf7_workflow_rules')||'[]');
+    existing=existing.filter(function(r){return r.id!==id;});
+    existing.push(rule);
+    localStorage.setItem('tf7_workflow_rules',JSON.stringify(existing));
+    WORKFLOW_RULES=existing;
+    if(!savedToFirebase) toast('✓ Rule saved (stored locally — will sync when online)');
+  } catch(le){
+    toast('✗ Could not save rule: '+le.message);
   }
   closeModal();render();
 }
 async function toggleWorkflowRule(id,active){
-  try{await db.ref('workflow_rules/'+id+'/active').set(active);}catch(e){const r=WORKFLOW_RULES.find(x=>x.id===id);if(r)r.active=active;}
-  toast(active?'Rule activated':'Rule paused');
+  try{await db.ref('workflow_rules/'+id+'/active').set(active);}catch(e){console.warn('Firebase toggle failed:',e);}
+  const r=WORKFLOW_RULES.find(x=>x.id===id);if(r)r.active=active;
+  // Persist to localStorage
+  try{localStorage.setItem('tf7_workflow_rules',JSON.stringify(WORKFLOW_RULES));}catch(_){}
+  toast(active?'Rule activated':'Rule paused');render();
 }
 async function deleteWorkflowRule(id){
   if(!confirm('Delete this rule?')) return;
-  try{await db.ref('workflow_rules/'+id).remove();}catch(e){WORKFLOW_RULES=WORKFLOW_RULES.filter(r=>r.id!==id);}
+  try{await db.ref('workflow_rules/'+id).remove();}catch(e){console.warn('Firebase delete failed:',e);}
+  WORKFLOW_RULES=WORKFLOW_RULES.filter(function(r){return r.id!==id;});
+  // Persist to localStorage
+  try{localStorage.setItem('tf7_workflow_rules',JSON.stringify(WORKFLOW_RULES));}catch(_){}
   toast('Rule deleted');render();
 }
 

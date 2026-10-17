@@ -864,7 +864,7 @@ function rerender(){
 }
 
 function startListeners(){
-  db.ref('users').on('value',s=>{const v=s.val();if(!v){db.ref('users').set(arrToObj(SD_USERS));return}USERS=objToArr(v);if(!loaded.users){loaded.users=true;checkLoaded();}else markRemoteUpdate('users');});
+  db.ref('users').on('value',s=>{const v=s.val();if(!v){db.ref('users').set(arrToObj(SD_USERS));return}USERS=objToArr(v);if(!loaded.users){loaded.users=true;checkLoaded();}else markRemoteUpdate('users');},e=>{if(e.code==='PERMISSION_DENIED'){loaded.users=true;checkLoaded();}});
   db.ref('depts').on('value',s=>{const v=s.val();if(!v){if(currentUser)db.ref('depts').set(arrToObj(SD_DEPTS));return;}DEPTS=objToArr(v);if(!loaded.depts){loaded.depts=true;checkLoaded();}else render();},e=>{if(e.code==='PERMISSION_DENIED'){loaded.depts=true;checkLoaded();}});
   db.ref('subdepts').on('value',s=>{const v=s.val();if(!v){if(currentUser)db.ref('subdepts').set(arrToObj(SD_SUBDEPTS));return;}SUBDEPTS=objToArr(v);if(!loaded.subdepts){loaded.subdepts=true;checkLoaded();}else render();},e=>{if(e.code==='PERMISSION_DENIED'){loaded.subdepts=true;checkLoaded();}});
   db.ref('statuses').on('value',s=>{const v=s.val();if(!v){if(currentUser)db.ref('statuses').set(SD_STATUSES);return;}STATUSES=v; // keep as {sdId:[...]} object - do NOT use objToArr
@@ -875,7 +875,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   db.ref('time_entries').on('value',s=>{TIME_ENTRIES=objToArr(s.val()||{},e=>{if(e.code==='PERMISSION_DENIED'){loaded.entries=true;checkLoaded();}});if(!loaded.entries){loaded.entries=true;checkLoaded();}else markRemoteUpdate('time');});
   db.ref('recurring_tasks').on('value',s=>{const v=s.val();if(!v){if(currentUser)db.ref('recurring_tasks').set(arrToObj(SD_RECURRING));else{loaded.recurring=true;checkLoaded();}return;}RECURRING=objToArr(v);if(!loaded.recurring){loaded.recurring=true;checkLoaded();}else markRemoteUpdate('recurring');},e=>{if(e.code==='PERMISSION_DENIED'){loaded.recurring=true;checkLoaded();}});
   db.ref('comments').on('value',s=>{COMMENTS=s.val()||{};if(!loaded.comments){loaded.comments=true;checkLoaded();}else markRemoteUpdate('comments');},e=>{if(e.code==='PERMISSION_DENIED'){loaded.comments=true;checkLoaded();}});
-  db.ref('firms').on('value',s=>{const v=s.val();if(!v){db.ref('firms').set(arrToObj(SD_FIRMS));return}FIRMS=objToArr(v);if(!loaded.firms){loaded.firms=true;checkLoaded();}else markRemoteUpdate('firms');});
+  db.ref('firms').on('value',s=>{const v=s.val();if(!v){db.ref('firms').set(arrToObj(SD_FIRMS));return}FIRMS=objToArr(v);if(!loaded.firms){loaded.firms=true;checkLoaded();}else markRemoteUpdate('firms');},e=>{if(e.code==='PERMISSION_DENIED'){loaded.firms=true;checkLoaded();}});
   db.ref('emailjs_config').on('value',s=>{EMAILJS_CFG=s.val()||SD_EMAILJS;if(!s.val())db.ref('emailjs_config').set(SD_EMAILJS);if(!loaded.emailjs){loaded.emailjs=true;checkLoaded();}else markRemoteUpdate('emailjs');initEmailJS();});
   db.ref('ca_firms').on('value',s=>{const v=s.val();if(!v){db.ref('ca_firms').set(arrToObj(SD_CA_FIRMS));return}CA_FIRMS=objToArr(v);if(!loaded.cafirms){loaded.cafirms=true;checkLoaded();}else markRemoteUpdate('cafirms');});
   db.ref('certificates').on('value',s=>{CERTIFICATES=objToArr(s.val()||{},e=>{if(e.code==='PERMISSION_DENIED'){loaded.certs=true;checkLoaded();}});if(!loaded.certs){loaded.certs=true;checkLoaded();}else markRemoteUpdate('certs');});
@@ -5572,27 +5572,32 @@ async function submitClientSignup(){
 }
 
 
-async function approveClientSignup(reqId){
+async function approveClientSignup(reqId, selectedClientId){
   const req=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
   if(!req) return;
-  // Find or match client by company name
-  var client=CLIENTS.find(function(c){return (c.name||'').toLowerCase()===(req.company||'').toLowerCase();});
-  var clientId=client?client.id:null;
-  // Create Firebase Auth account for client
+  var clientId=selectedClientId||'';
+  // If no existing client selected, create a new one
+  if(!clientId){
+    var newClientId=uid();
+    var newClient={id:newClientId,name:req.company||req.name,email:req.email,mobile:req.mobile||'',phones:(req.mobile?[req.mobile]:[]),createdAt:today(),createdByUserId:currentUser.id};
+    try{await db.ref('clients/'+newClientId).set(newClient);}catch(e){CLIENTS.push(newClient);}
+    clientId=newClientId;
+    toast('Created new client: '+(req.company||req.name));
+  }
+  const linkedClient=CLIENTS.find(function(c){return c.id===clientId;})||{name:req.company||req.name};
   const tempPass='Client@'+Math.random().toString(36).slice(2,8);
   const userId=uid();
   const userRecord={id:userId,name:req.name,email:req.email,mobile:req.mobile||'',
-    role:'client',active:true,clientId:clientId||'',
+    role:'client',active:true,clientId:clientId,
     pendingPasswordReset:tempPass,createdAt:today()};
   try{
     await db.ref('users/'+userId).set(userRecord);
-    await db.ref('client_signup_requests/'+reqId).update({status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId});
+    await db.ref('client_signup_requests/'+reqId).update({status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId,linkedClientId:clientId});
   }catch(e){
-    // Update in-memory if Firebase fails
-    const req=(window._clientSignupRequests||[]).find(r=>r.id===reqId);
-    if(req){req.status='approved';req.userId=userId;}
+    const r2=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
+    if(r2){r2.status='approved';r2.userId=userId;}
   }
-  toast('✓ Client account created for '+req.name+'. Temporary password: '+tempPass+'. Ask them to log in and change it via Forgot Password.');
+  toast('✓ Account created for '+req.name+' → linked to '+linkedClient.name+'. Temp password: '+tempPass);
   render();
 }
 async function rejectClientSignup(reqId){
@@ -8363,12 +8368,33 @@ function tasksPage(){
         return '<div style="background:rgba(126,217,87,.08);border:1px solid rgba(126,217,87,.3);border-radius:var(--r2);padding:12px;margin-bottom:14px">'
           +'<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">👤 Client Portal Sign-Up Requests ('+signupReqs.length+')</div>'
           +signupReqs.map(function(r){
-            return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
-              +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+r.name+'</div>'
-              +'<div style="font-size:11px;color:var(--text3)">'+r.email+(r.company?' · '+r.company:'')+(r.mobile?' · '+r.mobile:'')+'</div></div>'
+            var co=(r.company||'').toLowerCase();
+            var sorted=CLIENTS.slice().sort(function(a,b){
+              var an=(a.name||'').toLowerCase(),bn=(b.name||'').toLowerCase();
+              var as=an===co?2:an.includes(co)||co.includes(an)?1:0;
+              var bs=bn===co?2:bn.includes(co)||co.includes(bn)?1:0;
+              return bs-as;
+            });
+            var selectId='csr-link-'+r.id;
+            return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px">'
+              +'<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
+              +'<div style="flex:1"><div style="font-size:12px;font-weight:700">'+r.name+'</div>'
+              +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+r.email+(r.mobile?' · '+r.mobile:'')+'</div>'
+              +(r.company?'<div style="font-size:11px;color:var(--amber);margin-top:2px">Company entered: <b>'+r.company+'</b></div>':'')
+              +'</div></div>'
+              +'<div style="margin-bottom:8px">'
+              +'<label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Link to client in your records:</label>'
+              +'<select id="'+selectId+'" class="form-select" style="font-size:12px">'
+              +'<option value="">— Create new client ('+(r.company||r.name)+') —</option>'
+              +sorted.map(function(c){
+                var co2=(r.company||'').toLowerCase(),cn=(c.name||'').toLowerCase();
+                var isMatch=cn===co2||cn.includes(co2)||co2.includes(cn);
+                return '<option value="'+c.id+'"'+(isMatch?' selected':'')+'>'+c.name+(c.gstin?' ('+c.gstin+')':'')+(isMatch?' ✓ best match':'')+'</option>';
+              }).join('')
+              +'</select></div>'
               +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
-              +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="approveClientSignup(\''+r.id+'\')">✓ Create &amp; Approve</button>'
-              +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rejectClientSignup(\''+r.id+'\')">✗ Reject</button>'
+              +'<button class=\"btn btn-sm\" style=\"background:var(--green-bg);color:var(--green,#4ade80)\" onclick=\"approveClientSignup(\\\'' +r.id+ '\\\',document.getElementById(\\\'' +selectId+ '\\\').value)\">✓ Approve &amp; Link</button>'
+              +'<button class=\"btn btn-ghost btn-sm\" style=\"color:var(--red)\" onclick=\"rejectClientSignup(\\\'' +r.id+ '\\\')\">✗ Reject</button>'
               +'</div></div>';
           }).join('')
           +'</div>';
@@ -8738,7 +8764,7 @@ function certsPage(){
   return`
   <div class="flex-between mb-12">
     <div>
-      <div class="page-title">Certificates & UDIN</div><button class=\"btn btn-primary btn-sm\" onclick=\"openModal('newCert',{})\">+ New Certificate</button>
+      <div class="page-title">Certificates & UDIN</div>
       <div class="page-sub">Certificate register — ${certs.length} records</div>
     </div>
     <div style="display:flex;gap:7px;align-items:center">
@@ -10557,18 +10583,21 @@ function taskWhatsAppHTML(data){
   const assignees=taskAssignees(t);
   const client=getClient(t.clientId);
   const clientPhones=client&&Array.isArray(client.phones)?client.phones:[];
-  const firm=getFirm(t.firmId);
   const defaultMsg='*'+t.title+'*\nStatus: '+t.status+(t.dueDate?'\nDue: '+fmtDate(t.dueDate):'')+(client?'\nClient: '+client.name:'');
+  function getPhone(u){return(u.primaryMobile||u.whatsapp||u.mobile||u.phone||'').replace(/[^0-9+]/g,'');}
   return mHdr('Send WhatsApp')
+    +'<div style="background:var(--blue-bg);border:1px solid rgba(74,158,255,.2);border-radius:var(--r);padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--blue)">📱 Opens WhatsApp on your phone — select contacts below then click Send</div>'
     +'<div style="margin-bottom:12px">'
     +'<div style="font-size:12px;font-weight:600;margin-bottom:6px">To — Staff</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">'
-    +USERS.map(function(u){return'<label style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);border-radius:var(--r);cursor:pointer;font-size:12px">'
-      +'<input type="checkbox" class="wa-to-cb" value="'+(u.whatsapp||u.mobile||'')+'_'+u.name+'" '+(assignees.find(function(a){return a.id===u.id;})?'checked':'')+'>'
-      +'<span>'+u.name+'</span>'
-      +(u.whatsapp||u.mobile?''
-      :'<span style="font-size:10px;color:var(--amber)"> ⚠ no number</span>')
-    +'</label>';}).join('')
+    +USERS.map(function(u){
+      const ph=getPhone(u);
+      const isAssignee=assignees.find(function(a){return a.id===u.id;});
+      return'<label style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid '+(isAssignee?'var(--accent)':'var(--border)')+';border-radius:var(--r);cursor:pointer;font-size:12px'+(ph?'':'opacity:.5')+'">'
+        +'<input type="checkbox" class="wa-to-cb" value="'+ph+'_'+u.name+'" '+(isAssignee&&ph?'checked':'')+'>'
+        +'<span>'+u.name+'</span>'
+        +(ph?'<span style="font-size:10px;color:var(--text3)"> '+ph+'</span>':'<span style="font-size:10px;color:var(--red)"> ⚠ no number</span>')
+      +'</label>';}).join('')
     +(clientPhones.length?'</div><div style="font-size:12px;font-weight:600;margin-top:10px;margin-bottom:6px">To — Client ('+client.name+')</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">'
     +clientPhones.map(function(ph){return'<label style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--teal);border-radius:var(--r);cursor:pointer;font-size:12px">'
@@ -10577,24 +10606,32 @@ function taskWhatsAppHTML(data){
     +'</div></div>'
     +'<div class="form-row"><label class="form-label">Message</label>'
     +'<textarea class="form-textarea" id="wa-msg" rows="5">'+defaultMsg+'</textarea></div>'
-    +'<button class="btn btn-primary w-full" onclick="sendTaskWhatsApp()">📱 Send WhatsApp</button>';
+    +'<button class="btn btn-primary w-full" onclick="sendTaskWhatsApp()">📱 Send via WhatsApp</button>';
 }
-
 function sendTaskWhatsApp(){
   const msg=document.getElementById('wa-msg')?.value?.trim();
   if(!msg){toast('Enter a message');return;}
   const cbs=[...document.querySelectorAll('.wa-to-cb:checked')];
-  let sent=0;
+  if(!cbs.length){toast('Select at least one contact');return;}
+  let sent=0,noPhone=[];
   cbs.forEach(function(cb){
     const parts=cb.value.split('_');
-    const phone=parts[0];
-    if(phone){sendWhatsApp(phone,msg);sent++;}
-    else toast(parts.slice(1).join('_')+': No mobile number set');
+    const phone=(parts[0]||'').replace(/[^0-9]/g,'');
+    const name=parts.slice(1).join('_')||'Contact';
+    if(phone){
+      // Ensure country code — prepend 91 (India) if not already starting with country code
+      const normalised=phone.startsWith('91')&&phone.length>=12?phone:(phone.startsWith('0')?'91'+phone.slice(1):phone.length===10?'91'+phone:phone);
+      const url='https://wa.me/'+normalised+'?text='+encodeURIComponent(msg);
+      window.open(url,'_blank','noopener,noreferrer');
+      sent++;
+    } else {
+      noPhone.push(name);
+    }
   });
-  if(sent)toast('Sent to '+sent+' contacts');
+  if(noPhone.length) toast('⚠ No number saved for: '+noPhone.join(', '));
+  if(sent) toast('Opened WhatsApp for '+sent+' contact'+(sent>1?'s':''));
   closeModal();
 }
-
 // ══════════════════════════════════════════════════════
 //  NOTIFICATION SYSTEM
 // ══════════════════════════════════════════════════════

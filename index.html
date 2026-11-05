@@ -11173,7 +11173,7 @@ function modalHTML(){
     newDept:()=>newDeptHTML(),editDept:()=>editDeptHTML(data),newSubDept:()=>newSubDeptHTML(data),editSubDept:()=>editSubDeptHTML(data),
     editStatuses:()=>editStatusesHTML(data),
     newClient:()=>newClientHTML(),editClient:()=>editClientHTML(data),
-    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),clientUserAdmin:(d)=>clientUserAdminHTML(d.userId),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
+    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),clientUserAdmin:()=>clientUserAdminHTML(data.userId),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
     settRecurring:()=>settRecurringHTML(),settTemplates:()=>settTemplatesHTML(),newRecurring:()=>recurringFormHTML(),editRecurring:()=>recurringFormHTML(RECURRING.find(r=>r.id===data.id)),
     settFirms:()=>settFirmsHTML(),newFirm:()=>firmFormHTML(),editFirm:()=>firmFormHTML(FIRMS.find(f=>f.id===data.id)),
     settEmailJS:()=>settEmailJSHTML(),

@@ -2368,29 +2368,7 @@ async function fbAuthUpdatePassword(userId, newPinHash){
 
 
 function showForgotPassword(){
-  const email=prompt('Enter your email address to receive a password reset / activation link:');
-  if(!email||!email.trim())return;
-  auth.sendPasswordResetEmail(email.trim())
-    .then(()=>{
-      alert('✓ Password reset link sent to '+email.trim()+'\n\nCheck your inbox (and spam folder).\n\nIf this is your first login, this link will activate your account and let you set a password.');
-    })
-    .catch(e=>{
-      if(e.code==='auth/user-not-found'){
-        // User doesn't have a Firebase Auth account yet — create one first, then send reset
-        auth.createUserWithEmailAndPassword(email.trim(),'TempPass_'+Math.random().toString(36).slice(2,10)+'!')
-          .then(()=>auth.sendPasswordResetEmail(email.trim()))
-          .then(()=>{
-            alert('✓ Account activated! Password setup link sent to '+email.trim()+'\n\nCheck your inbox and follow the link to set your password.');
-          })
-          .catch(()=>{
-            alert('Could not send reset email. Make sure you are using the email address registered with your admin.');
-          });
-      } else if(e.code==='auth/invalid-email'){
-        alert('Invalid email address.');
-      } else {
-        alert('Could not send reset email: '+e.message);
-      }
-    });
+  alert('To reset your password, please contact your administrator.\n\nAdmin can set a new password from Settings → Client Portal Users.');
 }
 
 
@@ -5596,7 +5574,7 @@ async function cpChangePassword(){
     // Keep client_activations in sync so admin reset works
     var _ek=btoa(currentUser.email).replace(/[^a-zA-Z0-9]/g,'_');
     db.ref('client_activations/'+_ek).update({currentPass:btoa(p1),tempPass:p1}).catch(function(){});
-    toast('✓ Password updated successfully');
+    toast('\u2713 Password updated successfully');
     render();
   }catch(e){
     if(e.code==='auth/requires-recent-login'){toast('Session expired. Please log out and log in again, then change your password.');return;}
@@ -8123,207 +8101,85 @@ async function doEmailLogin(){
 
   if(!rawInput){loginError='Please enter your email';renderLogin();return;}
   if(!password){loginError='Please enter your password';renderLogin();return;}
+  if(!rawInput.includes('@')){loginError='Please use your email address to log in.';renderLogin();return;}
 
   loginLoading=true;loginError='';renderLogin();
+  const realEmail=rawInput;
+  const emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
 
-  // If username entered, we need to find the real email.
-  // But we can't query DB before auth. So for username login:
-  // Try a lightweight public fetch of the users node (only works if rules allow)
-  // or show an error asking them to use email.
-  let realEmail=rawInput;
-
-  if(!rawInput.includes('@')){
-    // Username entered - try to find email via a limited public query
-    // We stored users with email field - try querying with the app's own auth
-    // Since user isn't logged in, we use anonymous sign-in temporarily
-    loginError='Please use your email address to log in (not username).';
-    loginLoading=false;
-    renderLogin();
-    return;
+  // Helper: record current working password in client_activations for future admin reset
+  function recordPass(pass){
+    db.ref('client_activations/'+emailKey).once('value').then(function(s){
+      if(s.val()&&s.val().userId) db.ref('client_activations/'+emailKey).update({currentPass:btoa(pass)}).catch(function(){});
+    }).catch(function(){});
   }
 
-  // ── Try signing in directly with Firebase Auth ──────────────────────────
   try {
-    const cred = await auth.signInWithEmailAndPassword(realEmail, password);
-    // Record current password for admin reset capability
-    var _ekN=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
-    db.ref('client_activations/'+_ekN).once('value').then(function(s){if(s.val()&&s.val().userId){db.ref('client_activations/'+_ekN).update({currentPass:btoa(password)}).catch(function(){});}}).catch(function(){});
-
-    // ── Load user record from DB now that we're authenticated ──────────────
-    let matched=null;
-    // Try per-email query (works for staff, may be blocked for clients)
-    try {
-      const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
-      const val=snap.val();
-      if(val) matched=Object.values(val)[0];
-    } catch(_){}
-
-    // Fallback via client_activations index (public read, no auth needed)
-    if(!matched){
-      try{
-        const emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
-        const actSnap=await db.ref('client_activations/'+emailKey).once('value');
-        const actVal=actSnap.val();
-        if(actVal&&actVal.userId){
-          const uSnap=await db.ref('users/'+actVal.userId).once('value');
-          if(uSnap.val()) matched=uSnap.val();
-        }
-      }catch(_){}
-    }
-
-    // Last resort: scan all users (staff only - clients can't read /users)
-    if(!matched){
-      try {
-        const snap=await db.ref('users').once('value');
-        const all=snap.val()?Object.values(snap.val()):[];
-        matched=all.find(u=>(u.email||'').toLowerCase()===realEmail);
-      } catch(_){}
-    }
-
-    if(!matched){
-      await auth.signOut();
-      loginLoading=false;
-      loginError='Authenticated but no user record found. Contact admin.';
-      renderLogin();return;
-    }
-
-    if(matched.active===false){
-      await auth.signOut();
-      loginLoading=false;
-      loginError='Your account has been deactivated. Contact your admin.';
-      renderLogin();return;
-    }
-
-    // Apply pending password reset now that we have fresh auth
-    if(matched.pendingPasswordReset){
-      try {
-        await cred.user.updatePassword(matched.pendingPasswordReset);
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-        toast('✓ Your password has been updated by admin.');
-      } catch(_){
-        await fbUpd('users/'+matched.id,{pendingPasswordReset:null});
-      }
-    }
-
-    // ── Complete login ──────────────────────────────────────────────────────
-    currentUser={...matched,pendingPasswordReset:null};
-    LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null});
-    loginEmail='';loginPassword='';loginError='';loginLoading=false;
-    loginSelectedUser=null;
-
-    Object.keys(loaded).forEach(k=>loaded[k]=false);
-    loaded.timer=true;
-    db.ref().off();
-    startListeners();
-
-    db.ref('active_timers/'+currentUser.id).on('value',s=>{
-      activeTimer=s.val()||null;
-      clearInterval(timerInterval);timerInterval=null;
-      if(activeTimer)timerInterval=setInterval(tickTimer,1000);
-      rerender();
-    });
-
-    requestDesktopNotifPermission();
-    render();
+    // ── Normal sign-in ──────────────────────────────────────────────────
+    var cred=await auth.signInWithEmailAndPassword(realEmail,password);
+    recordPass(password);
+    await finishLogin(cred,realEmail);
 
   } catch(e){
     loginLoading=false;
+
     if(e.code==='auth/user-not-found'){
-      // No Firebase Auth account yet — try to auto-create using pending password or entered password
-      try {
-        // Try public client_activations index first (works without auth)
-        var emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
+      // No Firebase Auth account — first login, create using admin-set tempPass
+      try{
         var actSnap=await db.ref('client_activations/'+emailKey).once('value').catch(function(){return null;});
         var actVal=actSnap&&actSnap.val?actSnap.val():null;
-        var uval=null;
-        if(!actVal){
-          // Fallback: try authenticated query (works for staff)
-          var usnap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value').catch(function(){return null;});
-          uval=usnap&&usnap.val&&usnap.val()?Object.values(usnap.val())[0]:null;
-        } else {
-          // Got activation record - build a minimal uval from it
-          uval={id:actVal.userId,email:actVal.email,pendingPasswordReset:actVal.tempPass};
+        if(!actVal||!actVal.userId){
+          loginError='No account found for this email. Contact your admin.';renderLogin();return;
         }
-        if(!uval){loginError='No account found for this email. Contact your admin.';renderLogin();return;}
-        // Use admin-set password if available, otherwise use entered password
-        var activatePass=uval.pendingPasswordReset||password;
-        try {
-          cred=await auth.createUserWithEmailAndPassword(realEmail, activatePass);
-          if(uval.pendingPasswordReset){
-            await fbUpd('users/'+uval.id,{pendingPasswordReset:null});
-            toast('\u2713 Account activated with your admin-set password.');
-          } else {
-            toast('\u2713 Account activated. Use this password to log in next time.');
-          }
-          await finishLogin(cred,realEmail);
-          return;
-        } catch(ce){
+        var activatePass=actVal.tempPass||password;
+        try{
+          var cred2=await auth.createUserWithEmailAndPassword(realEmail,activatePass);
+          db.ref('client_activations/'+emailKey).update({currentPass:btoa(activatePass)}).catch(function(){});
+          toast('✓ Account activated. You are now logged in.');
+          await finishLogin(cred2,realEmail);
+        }catch(ce){
           if(ce.code==='auth/email-already-in-use'){
-            // Account exists but signIn failed — try with pending password
-            if(uval.pendingPasswordReset){
-              try {
-                cred=await auth.signInWithEmailAndPassword(realEmail,uval.pendingPasswordReset);
-                await fbUpd('users/'+uval.id,{pendingPasswordReset:null});
-                toast('\u2713 Password updated by admin applied successfully.');
-                await finishLogin(cred,realEmail);
-                return;
-              } catch(_){loginError='Incorrect password. Contact your admin to reset it.';renderLogin();return;}
-            } else {
-              loginError='Incorrect password.';renderLogin();return;
+            // Account exists in Firebase Auth but we got user-not-found — try tempPass sign-in
+            try{
+              var cred3=await auth.signInWithEmailAndPassword(realEmail,actVal.tempPass);
+              db.ref('client_activations/'+emailKey).update({currentPass:btoa(actVal.tempPass)}).catch(function(){});
+              await finishLogin(cred3,realEmail);
+            }catch(_){
+              loginError='Incorrect password. Contact your admin to reset it.';renderLogin();
             }
           } else {
-            loginError='Could not activate account: '+ce.code;renderLogin();return;
+            loginError='Could not activate account: '+ce.message;renderLogin();
           }
         }
-      } catch(qe){loginError='Login error: '+qe.message;renderLogin();return;}
+      }catch(qe){loginError='Login error: '+qe.message;renderLogin();}
+
     } else if(e.code==='auth/wrong-password'||e.code==='auth/invalid-credential'){
-      // Check if admin set a pending password reset (use client_activations for clients — /users is blocked)
+      // Wrong password — check if admin set a new tempPass
       try{
-        var emailKey2=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
-        var actSnap2=await db.ref('client_activations/'+emailKey2).once('value').catch(function(){return null;});
+        var actSnap2=await db.ref('client_activations/'+emailKey).once('value').catch(function(){return null;});
         var actVal2=actSnap2&&actSnap2.val?actSnap2.val():null;
-        var udata=null;
-        if(actVal2&&actVal2.userId){
-          // Client path: get pending password from client_activations
-          udata={id:actVal2.userId,email:actVal2.email,pendingPasswordReset:actVal2.tempPass};
-        } else {
-          // Staff path: query /users directly
-          var snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value').catch(function(){return null;});
-          udata=snap&&snap.val&&snap.val()?Object.values(snap.val())[0]:null;
-        }
-        if(udata&&udata.pendingPasswordReset){
-          // Try signing in with the new password
+        if(actVal2&&actVal2.tempPass&&actVal2.tempPass!==password){
+          // Try the admin-set password
           try{
-            cred=await auth.signInWithEmailAndPassword(realEmail,udata.pendingPasswordReset);
-            var _ek2=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
-            db.ref('client_activations/'+_ek2).update({currentPass:btoa(udata.pendingPasswordReset)}).catch(function(){});
-            await fbUpd('users/'+udata.id,{pendingPasswordReset:null});
-            toast('✓ Password updated by admin applied successfully.');
-            // Complete login
-            await finishLogin(cred,realEmail);
+            var cred4=await auth.signInWithEmailAndPassword(realEmail,actVal2.tempPass);
+            db.ref('client_activations/'+emailKey).update({currentPass:btoa(actVal2.tempPass)}).catch(function(){});
+            toast('✓ Logged in with admin-set password.');
+            await finishLogin(cred4,realEmail);
             return;
-          }catch(newPwErr){
-            loginError='Incorrect password. Contact admin to reset your password, or use Forgot password.';
-            loginLoading=false;renderLogin();return;
-          }
-        } else {
-          loginError='Incorrect password. Ask your admin to reset it in Settings → Users → Edit.';
-          loginLoading=false;renderLogin();return;
+          }catch(_){}
         }
-      }catch(_){
-        loginError='Incorrect password.';
-        loginLoading=false;renderLogin();return;
-      }
+      }catch(_){}
+      loginError='Incorrect password. Contact your admin to reset it.';renderLogin();
+
     } else if(e.code==='auth/invalid-email'){
-      loginError='Invalid email address.';
+      loginError='Invalid email address.';renderLogin();
     } else if(e.code==='auth/too-many-requests'){
-      loginError='Too many attempts. Please wait a moment and try again.';
+      loginError='Too many attempts. Please wait and try again.';renderLogin();
     } else if(e.code==='auth/network-request-failed'){
-      loginError='Network error. Check your connection.';
+      loginError='Network error. Check your connection.';renderLogin();
     } else {
-      loginError='Sign in failed: '+(e.code||e.message);
+      loginError='Sign in failed: '+(e.code||e.message);renderLogin();
     }
-    renderLogin();
   }
 }
 // Legacy alias
@@ -12366,14 +12222,19 @@ async function adminSetClientPwdInline(userId){
     var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
     var actSnap=await db.ref('client_activations/'+emailKey).once('value').catch(function(){return null;});
     var actVal=actSnap&&actSnap.val?actSnap.val():null;
-    var currentPassB64=actVal&&actVal.currentPass?actVal.currentPass:null;
-    var currentPass=currentPassB64?atob(currentPassB64):null;
+
+    // Gather candidate passwords to try signing in as the client via REST
+    // Order: recorded current password → previously stored tempPass
+    var candidates=[];
+    if(actVal&&actVal.currentPass) candidates.push(atob(actVal.currentPass));
+    if(actVal&&actVal.tempPass&&candidates.indexOf(actVal.tempPass)===-1) candidates.push(actVal.tempPass);
+
     var updated=false;
-    if(currentPass){
+    for(var ci=0;ci<candidates.length&&!updated;ci++){
       try{
         var r1=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyC-PPxwQx7dsYywxM1fl_rP3qgbXe1LdM4',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({email:u.email,password:currentPass,returnSecureToken:true})
+          body:JSON.stringify({email:u.email,password:candidates[ci],returnSecureToken:true})
         });
         var d1=await r1.json();
         if(d1.idToken&&!d1.error){
@@ -12389,14 +12250,21 @@ async function adminSetClientPwdInline(userId){
         }
       }catch(_){}
     }
+
     if(!updated){
-      // No currentPass recorded yet (client never logged in) — store tempPass for first-login creation
-      await db.ref('client_activations/'+emailKey).set({userId:userId,email:u.email,tempPass:pwd,createdAt:today()}).catch(function(){});
+      // No candidate worked — store tempPass so it applies on first login
+      var existing=actVal||{};
+      await db.ref('client_activations/'+emailKey).set(
+        Object.assign({},existing,{userId:userId,email:u.email,tempPass:pwd,currentPass:null})
+      ).catch(function(){});
     }
-    await fbUpd('users/'+userId,{pendingPasswordReset:updated?null:pwd});
+
+    // Clear pendingPasswordReset flag
+    await fbUpd('users/'+userId,{pendingPasswordReset:null});
+
     toast(updated
       ?'✓ Password changed to: '+pwd+'. Client can log in with new password immediately.'
-      :'✓ Password set to: '+pwd+'. Will apply when client first logs in.');
+      :'✓ Password set to: '+pwd+'. Will apply on client’s next login.');
     closeModal(); render();
   }catch(e){toast('Error: '+e.message);}
 }

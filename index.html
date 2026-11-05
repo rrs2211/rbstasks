@@ -5501,9 +5501,10 @@ function clientPortalPage(){
     {id:'newreq',label:'➕ New Request'},
     {id:'docs',label:'📁 Documents',count:docCount||null},
     {id:'invoices',label:'🧾 Invoices',count:invoices.length||null},
+    {id:'cpsettings',label:'⚙ Settings'},
   ];
 
-  return`<div style="max-width:720px;margin:0 auto">
+  return`<div style="max-width:720px;margin:0 auto;font-size:15px">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
     <div>
       <div style="font-size:18px;font-weight:700">${c.name}</div>
@@ -5523,9 +5524,77 @@ function clientPortalPage(){
   ${tab==='newreq'?cpNewRequestTab(c):''}
   ${tab==='docs'?cpDocsTab(allTasks):''}
   ${tab==='invoices'?cpInvoicesTab(invoices):''}
+  ${tab==='cpsettings'?cpSettingsTab():''}
   </div>`;
 }
 
+
+function cpSettingsTab(){
+  const u=currentUser;
+  const fs=LS.get('userFontSize',14);
+  const theme=LS.get('theme','light');
+  return`<div class="card" style="max-width:480px;margin:0 auto">
+  <div style="font-size:15px;font-weight:700;margin-bottom:16px">My Settings</div>
+  <div style="margin-bottom:14px">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Display Name</label>
+    <div style="display:flex;gap:8px">
+      <input id="cp-sett-name" class="form-input" value="${u.name||''}" style="flex:1;font-size:14px"/>
+      <button class="btn btn-sm" onclick="cpSaveName()">Save</button>
+    </div>
+  </div>
+  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Change Password</label>
+    <input id="cp-sett-pw1" class="form-input mb-6" type="password" placeholder="New password (min 6 chars)" style="font-size:14px"/>
+    <input id="cp-sett-pw2" class="form-input" type="password" placeholder="Confirm new password" style="font-size:14px"/>
+    <button class="btn btn-sm mt-8" onclick="cpChangePassword()">Update Password</button>
+  </div>
+  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Font Size</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${[12,13,14,15,16,17,18].map(s=>`<button class="btn btn-xs ${fs===s?'btn-primary':''}" onclick="applyFontSize(${s});LS.set('userFontSize',${s});render()">${s}px</button>`).join('')}
+    </div>
+  </div>
+  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Colour Theme</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-xs ${theme==='light'?'btn-primary':''}" onclick="setTheme('light');render()">☀ Light</button>
+      <button class="btn btn-xs ${theme==='dark'?'btn-primary':''}" onclick="setTheme('dark');render()">🌙 Dark</button>
+      <button class="btn btn-xs ${theme==='system'?'btn-primary':''}" onclick="setTheme('system');render()">⚙ System</button>
+    </div>
+  </div>
+  <div style="padding-top:14px;border-top:1px solid var(--border)">
+    <button class="btn btn-danger btn-sm" onclick="doLogout()">Sign Out</button>
+  </div>
+  </div>`;
+}
+async function cpSaveName(){
+  const name=(document.getElementById('cp-sett-name')?.value||'').trim();
+  if(!name){toast('Name cannot be empty');return;}
+  try{
+    await fbUpd('users/'+currentUser.id,{name});
+    currentUser.name=name;
+    const cached=LS.get('currentUser',{});
+    LS.set('currentUser',{...cached,name});
+    toast('✓ Name updated');
+    render();
+  }catch(e){toast('Error: '+e.message);}
+}
+async function cpChangePassword(){
+  const p1=(document.getElementById('cp-sett-pw1')?.value||'');
+  const p2=(document.getElementById('cp-sett-pw2')?.value||'');
+  if(!p1||p1.length<6){toast('Password must be at least 6 characters');return;}
+  if(p1!==p2){toast('Passwords do not match');return;}
+  try{
+    const user=auth.currentUser;
+    if(!user){toast('Not signed in');return;}
+    await user.updatePassword(p1);
+    toast('✓ Password updated successfully');
+    render();
+  }catch(e){
+    if(e.code==='auth/requires-recent-login'){toast('Please log out and log in again, then change your password.');return;}
+    toast('Error: '+e.message);
+  }
+}
 function cpTasksTab(activeTasks,doneTasks){
   return`<div>
   ${activeTasks.length===0?'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No active tasks right now. Use ➕ New Request to submit one.</div>':''}
@@ -5554,13 +5623,21 @@ function cpTasksTab(activeTasks,doneTasks){
   }).join('')}
   ${doneTasks.length?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text3);padding:4px 0">▸ ${doneTasks.length} completed task${doneTasks.length!==1?'s':''}</summary>
     <div style="margin-top:8px">
-    ${doneTasks.map(t=>`<div class="card mb-6" style="opacity:.7;border-left:3px solid ${statusColor(t.status)}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
-        <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0;font-size:10px">${t.status}</span>
-      </div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${fmtDate(t.dueDate)||''}</div>
-    </div>`).join('')}
+    ${doneTasks.map(t=>{
+      const tInv=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id&&(inv.taskId===t.id||(Array.isArray(inv.taskIds)&&inv.taskIds.includes(t.id))));
+      const tInvAmt=tInv.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
+      const closeDate=t.completedAt||t.updatedAt||t.dueDate||'';
+      return`<div class="card mb-6" style="opacity:.85;border-left:3px solid ${statusColor(t.status)}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">${getDept(t.deptId)?.name||''}${closeDate?' · Closed '+fmtDate(closeDate):''}</div>
+          </div>
+          <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0;font-size:10px">${t.status}</span>
+        </div>
+        ${tInvAmt>0?`<div style="margin-top:6px;font-size:12px;color:var(--text2)">🧾 Invoiced: <strong>\u20b9${tInvAmt.toLocaleString('en-IN')}</strong>${tInv.some(i=>i.status==='paid')?'<span style="margin-left:6px;font-size:10px;background:#dcfce7;color:#16a34a;border-radius:4px;padding:1px 5px">Paid</span>':'<span style="margin-left:6px;font-size:10px;background:#fef9c3;color:#ca8a04;border-radius:4px;padding:1px 5px">Pending</span>'}</div>`:''}
+      </div>`;
+    }).join('')}
     </div>
   </details>`:''}
   </div>`;
@@ -5602,12 +5679,14 @@ async function cpSubmitNewRequest(clientId){
   const priority=document.getElementById('cpnr-priority')?.value||'medium';
   const notes=(document.getElementById('cpnr-notes')?.value||'').trim();
   if(!title){toast('Please enter a task description');return;}
+  const adminUsers=USERS.filter(u=>u.role==='superadmin'||u.role==='admin');
+  const adminIds=adminUsers.map(u=>u.id);
   const task={
     id:uid(),title,clientId,
     status:'Pending',priority,
     dueDate,description:notes,
     createdAt:today(),createdByClientId:currentUser.id,
-    assignedTo:[],deptId:''
+    assignedTo:adminIds,deptId:''
   };
   try{
     await db.ref('tasks/'+task.id).set(task);
@@ -7890,7 +7969,7 @@ function render(){
     const _sp=searchPortalOpen?searchPortalHTML():'';
     const _bb=bulkMode&&selectedTasks.size>0?bulkBarHTML():'';
     const _fab=currentUser&&curPage!=='settings'?'<div class="fab-wrap"><button class="fab-hint" onclick="openModal(\'newReminder\',{})">🔔 Add Reminder</button><button class="fab" id="fab-new-task" title="New Task (N)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>':'';
-    app.innerHTML=_tb+'<div class="app-shell">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
+    app.innerHTML=_tb+'<div class="app-shell">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(isClientUser()?' nav-collapsed':navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
     bindAll();
   } catch(e) {
     console.error('[TaskHub render error]', e);

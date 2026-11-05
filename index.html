@@ -8340,7 +8340,7 @@ function switchUser(){doLogout();}
 function topBarHTML(){
   const u=currentUser,runSec=activeTimer?liveSec(activeTimer):0;
   const searchRes=searchQuery.length>1?doSearch(searchQuery):[];
-  const pendingSignups=(currentUser.role==='superadmin')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
+  const pendingSignups=(currentUser.role==='superadmin'||currentUser.role==='admin'||currentUser.role==='manager')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
   const pendingApprovals=(currentUser.role!=='employee')?TASKS.filter(t=>t.approvalStatus==='pending'&&(currentUser.role==='superadmin'||t.deptId===currentUser.deptId)).length:0;
   const activeFirm=getActiveFirm();
   return`<div class="top-bar">
@@ -8664,6 +8664,7 @@ function tasksPage(){
   if(taskFilter.due==='nodue')tasks=tasks.filter(t=>!t.dueDate&&!isTaskTerminal(t));
   if(taskFilter.search&&taskFilter.search.trim()){const sq=taskFilter.search.toLowerCase().trim();tasks=tasks.filter(t=>(t.title||'').toLowerCase().includes(sq)||(getClient(t.clientId)?.name||'').toLowerCase().includes(sq)||(t.notes||'').toLowerCase().includes(sq)||(getDept(t.deptId)?.name||'').toLowerCase().includes(sq)||(getSD(t.subDeptId)?.name||'').toLowerCase().includes(sq)||taskAssignees(t).some(u=>(u.name||'').toLowerCase().includes(sq)));}
   const pendingAppr=myTasks().filter(t=>t.approvalStatus==='pending');
+  const pendingSignups=(currentUser.role==='superadmin'||currentUser.role==='admin'||currentUser.role==='manager')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
   const udinNeeded=myTasks().filter(t=>requiresUDIN(t)&&isTaskTerminal(t)&&!hasValidUDIN(t));
   const certTasks=myTasks().filter(t=>t.isCertificate);
   const hasFilter=!!(taskFilter.search||taskFilter.depts.length||taskFilter.subdepts?.length||taskFilter.clients.length||taskFilter.priorities.length||taskFilter.statuses.length||taskFilter.assignees.length||(taskFilter.due&&taskFilter.due!=='all')||taskFilter.exactDate);

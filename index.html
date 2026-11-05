@@ -5751,6 +5751,16 @@ async function submitClientSignup(){
   const mobile=(document.getElementById('cs-mobile')?.value||'').trim();
   const err=document.getElementById('cs-err');
   if(!name||!email){if(err)err.textContent='Name and email are required';return;}
+  if(!/^[^@]+@[^@]+\.[^@]+$/.test(email)){if(err)err.textContent='Please enter a valid email address';return;}
+  // Check for duplicate: existing approved user or pending request with same email
+  const dupReq=(window._clientSignupRequests||[]).find(r=>r.email&&r.email.toLowerCase()===email&&r.status==='pending');
+  if(dupReq){if(err)err.textContent='A signup request for this email is already pending.';return;}
+  // Check via public client_activations (email already has an account)
+  try{
+    var ck=btoa(email).replace(/[^a-zA-Z0-9]/g,'_');
+    var eSnap=await db.ref('client_activations/'+ck).once('value').catch(function(){return null;});
+    if(eSnap&&eSnap.val()){if(err)err.textContent='An account for this email already exists. Please log in.';return;}
+  }catch(_){}
   const reqId=uid();
   try{
     await db.ref('client_signup_requests/'+reqId).set({id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
@@ -5768,6 +5778,9 @@ function doRejectSignup(btn){rejectClientSignup(btn.dataset.rid);}
 async function approveClientSignup(reqId, selectedClientId){
   const req=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
   if(!req) return;
+  // Check for duplicate email in USERS
+  var dupUser=USERS.find(function(u){return u.email&&u.email.toLowerCase()===(req.email||'').toLowerCase();});
+  if(dupUser){toast('⚠ A user with email '+req.email+' already exists ('+dupUser.name+'). Cannot create duplicate.');return;}
   var clientId=selectedClientId||'';
   // If no existing client selected, create a new one
   if(!clientId){
@@ -12145,31 +12158,61 @@ function settClientUsersHTML(){
         <div class="li-name">${u.name}${!isActive?'<span style="font-size:10px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:1px 5px;margin-left:6px">Inactive</span>':''}</div>
         <div class="li-sub">${u.email||'no email'}${cl?' · '+cl.name:' · no client linked'}</div>
       </div>
-      <div style="display:flex;gap:5px;flex-shrink:0">
-        <button class="btn btn-ghost btn-xs" onclick="resetClientUserPassword('${u.id}')">🔑 Reset pwd</button>
-        ${u.pendingPasswordReset?`<button class="btn btn-ghost btn-xs" style="color:var(--blue)" onclick="alert('Login details for '+u.name+':\\n\\nEmail: '+u.email+'\\nTemp password: '+u.pendingPasswordReset+'\\n\\nThey will be asked to set a new password on first login.')">👁 View pwd</button>`:''}
+      <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
+        ${u.pendingPasswordReset?`<button class="btn btn-ghost btn-xs" style="color:var(--blue)" data-uid="${u.id}" onclick="viewClientPwd(this.dataset.uid)">👁 Pwd</button>`:''}
+        <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="setClientPassword(this.dataset.uid)">🔑 Set pwd</button>
         ${isActive
-          ?`<button class="btn btn-ghost btn-xs" style="color:var(--amber)" onclick="toggleClientUserActive('${u.id}',false)">Deactivate</button>`
-          :`<button class="btn btn-ghost btn-xs" style="color:var(--green,#4ade80)" onclick="toggleClientUserActive('${u.id}',true)">Reactivate</button>`
+          ?`<button class="btn btn-ghost btn-xs" style="color:var(--amber)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,false)">Deactivate</button>`
+          :`<button class="btn btn-ghost btn-xs" style="color:var(--green,#4ade80)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,true)">Reactivate</button>`
         }
+        <button class="btn btn-ghost btn-xs" style="color:var(--red)" data-uid="${u.id}" onclick="deleteClientUser(this.dataset.uid)">🗑 Delete</button>
       </div>
     </div>`;
   }).join('')}`;
 }
-async function resetClientUserPassword(userId){
+function viewClientPwd(userId){
   const u=USERS.find(x=>x.id===userId);
   if(!u){toast('User not found');return;}
-  if(!confirm('Reset password for '+u.name+'?\nA temporary password will be generated.\nShare it securely — they will be prompted to change it on next login.')) return;
-  const tempPass='Client@'+Math.random().toString(36).slice(2,8);
+  if(u.pendingPasswordReset){
+    alert('Login details for '+u.name+':\n\nEmail: '+u.email+'\nTemp password: '+u.pendingPasswordReset+'\n\nThey will be asked to set a new password on first login.');
+  } else {
+    toast('No pending password on file. Use Set pwd to generate one.');
+  }
+}
+async function setClientPassword(userId){
+  const u=USERS.find(x=>x.id===userId);
+  if(!u){toast('User not found');return;}
+  const auto='Client@'+Math.random().toString(36).slice(2,8);
+  const entered=prompt('Set password for '+u.name+'\n\nEnter a custom password, or leave blank to auto-generate:\n(Leave blank → '+auto+')','' );
+  if(entered===null) return; // cancelled
+  const tempPass=(entered.trim())||auto;
+  if(tempPass.length<6){toast('Password must be at least 6 characters');return;}
   try{
     var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
     await fbUpd('users/'+userId,{pendingPasswordReset:tempPass});
     await db.ref('client_activations/'+emailKey).set({userId,email:u.email,tempPass,createdAt:today()}).catch(function(){});
-    alert('Temporary password for '+u.name+':\n\n'+tempPass+'\n\nPlease share this securely. They will be asked to set a new password on next login.');
-    toast('✓ Password reset for '+u.name);
+    alert('Password set for '+u.name+':\n\nEmail: '+u.email+'\nPassword: '+tempPass+'\n\nShare this securely. They will be asked to change it on next login.');
+    toast('✓ Password set for '+u.name);
     render();
   }catch(e){toast('Error: '+e.message);}
 }
+async function deleteClientUser(userId){
+  const u=USERS.find(x=>x.id===userId);
+  if(!u){toast('User not found');return;}
+  if(!confirm('Permanently delete portal account for '+u.name+' ('+u.email+')?\n\nThis removes their login access. Client records and tasks are not affected.')) return;
+  if(!confirm('Are you sure? This cannot be undone.')) return;
+  try{
+    await db.ref('users/'+userId).remove();
+    // Remove from client_activations too
+    if(u.email){
+      var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
+      await db.ref('client_activations/'+emailKey).remove().catch(function(){});
+    }
+    toast('✓ Deleted portal account for '+u.name);
+    render();
+  }catch(e){toast('Error: '+e.message);}
+}
+async function resetClientUserPassword(userId){ return setClientPassword(userId); }
 async function toggleClientUserActive(userId,active){
   const u=USERS.find(x=>x.id===userId);
   if(!u){toast('User not found');return;}

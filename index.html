@@ -933,7 +933,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   });
   db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
   db.ref('leaves').on('value',s=>{LEAVES=s.val()?Object.values(s.val()):[];render();});
-  db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];});
+  db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];renderIfReady();});
   db.ref('workflow_rules').on('value',function(s){
     var fromFirebase=s.val()?Object.values(s.val()):[];
     if(fromFirebase.length>0){
@@ -8739,7 +8739,7 @@ function tasksPage(){
   <div class="tabs">${['All','Active','Approvals','UDIN','Certs','Done','Rejected','🔒 Private'].map((l,i)=>{
     const rejCnt=tasks.filter(t=>t.status==='Rejected'||t.approvalStatus==='rejected').length;
     const privCnt=tasks.filter(t=>t.private&&t.ownerId===currentUser.id).length;
-    const cnt=[(showClosedBilled?tasks.length:tasks.filter(t=>!isTaskTerminal(t)).length),tasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started').length,pendingAppr.length,udinNeeded.length,certTasks.length,tasks.filter(t=>isTaskTerminal(t)).length,rejCnt,privCnt][i];
+    const cnt=[(showClosedBilled?tasks.length:tasks.filter(t=>!isTaskTerminal(t)).length),tasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started').length,pendingAppr.length+pendingSignups,udinNeeded.length,certTasks.length,tasks.filter(t=>isTaskTerminal(t)).length,rejCnt,privCnt][i];
     const col=i===2?'color:var(--amber)':i===3?'color:var(--purple)':i===4?'color:var(--blue)':i===6?'color:var(--red)':i===7?'color:var(--teal)':'';
     return`<div class="tab${curTab===i?' active':''}" data-tab="${i}" style="${col}">${l} <span style="color:var(--text3)">${cnt}</span></div>`;}).join('')}</div>
   ${sortBarHTML()}
@@ -11172,7 +11172,7 @@ function modalHTML(){
     newDept:()=>newDeptHTML(),editDept:()=>editDeptHTML(data),newSubDept:()=>newSubDeptHTML(data),editSubDept:()=>editSubDeptHTML(data),
     editStatuses:()=>editStatusesHTML(data),
     newClient:()=>newClientHTML(),editClient:()=>editClientHTML(data),
-    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
+    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),clientUserAdmin:(d)=>clientUserAdminHTML(d.userId),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
     settRecurring:()=>settRecurringHTML(),settTemplates:()=>settTemplatesHTML(),newRecurring:()=>recurringFormHTML(),editRecurring:()=>recurringFormHTML(RECURRING.find(r=>r.id===data.id)),
     settFirms:()=>settFirmsHTML(),newFirm:()=>firmFormHTML(),editFirm:()=>firmFormHTML(FIRMS.find(f=>f.id===data.id)),
     settEmailJS:()=>settEmailJSHTML(),
@@ -12287,6 +12287,80 @@ async function backfillClientActivations(){
     }catch(_){}
   }
 }
+
+function openClientUserModal(userId){
+  openModal('clientUserAdmin',{userId});
+}
+function clientUserAdminHTML(userId){
+  const u=USERS.find(x=>x.id===userId);
+  if(!u) return mHdr('User not found')+'<div style="padding:1rem;color:var(--red)">User not found.</div>';
+  const cl=getClient(u.clientId);
+  const isActive=u.active!==false;
+  const clients=(CLIENTS||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  return`${mHdr((u.name||'Client User')+' — Manage')}
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:12px;background:var(--bg2);border-radius:var(--r)">
+    <div class="avatar ${avClass(u.id)}" style="width:44px;height:44px;font-size:14px;flex-shrink:0">${initials(u.name)}</div>
+    <div>
+      <div style="font-size:15px;font-weight:700">${u.name}</div>
+      <div style="font-size:12px;color:var(--text3)">${u.email||'no email'}</div>
+      <div style="font-size:12px;color:var(--text3)">${cl?'🏢 '+cl.name:'no client linked'}</div>
+    </div>
+    ${!isActive?'<span style="font-size:11px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:2px 7px;margin-left:auto">Inactive</span>':''}
+  </div>
+  <div style="margin-bottom:12px">
+    <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Display Name</label>
+    <div style="display:flex;gap:8px">
+      <input id="cum-name" class="form-input" value="${escHtml(u.name||'')}" style="flex:1"/>
+      <button class="btn btn-sm" data-uid="${u.id}" onclick="adminSaveClientName(this.dataset.uid)">Save</button>
+    </div>
+  </div>
+  <div style="margin-bottom:12px">
+    <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Linked Client</label>
+    <div style="display:flex;gap:8px">
+      <select id="cum-client" class="form-select" style="flex:1">
+        <option value="">— None —</option>
+        ${clients.map(c=>`<option value="${c.id}" ${u.clientId===c.id?'selected':''}>${escHtml(c.name)}</option>`).join('')}
+      </select>
+      <button class="btn btn-sm" data-uid="${u.id}" onclick="adminSaveClientLink(this.dataset.uid)">Save</button>
+    </div>
+  </div>
+  <div style="margin-bottom:12px">
+    <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Set Password${u.pendingPasswordReset?` <span style="color:var(--amber);font-weight:400">(pending: ${escHtml(u.pendingPasswordReset)})</span>`:''}</label>
+    <div style="display:flex;gap:8px">
+      <input id="cum-pwd" class="form-input" placeholder="New password (min 6 chars)" style="flex:1"/>
+      <button class="btn btn-sm" data-uid="${u.id}" onclick="adminSetClientPwdInline(this.dataset.uid)">Set</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border)">
+    ${isActive
+      ?`<button class="btn btn-sm" style="color:var(--amber);border-color:var(--amber)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,false);closeModal()">⏸ Deactivate</button>`
+      :`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,true);closeModal()">▶ Reactivate</button>`
+    }
+    <button class="btn btn-sm btn-danger" data-uid="${u.id}" onclick="deleteClientUser(this.dataset.uid)">🗑 Delete Account</button>
+  </div>`;
+}
+async function adminSaveClientName(userId){
+  const name=(document.getElementById('cum-name')?.value||'').trim();
+  if(!name){toast('Name cannot be empty');return;}
+  try{ await fbUpd('users/'+userId,{name}); toast('✓ Name updated'); closeModal(); render(); }catch(e){toast('Error: '+e.message);}
+}
+async function adminSaveClientLink(userId){
+  const clientId=document.getElementById('cum-client')?.value||'';
+  try{ await fbUpd('users/'+userId,{clientId}); toast('✓ Client link updated'); closeModal(); render(); }catch(e){toast('Error: '+e.message);}
+}
+async function adminSetClientPwdInline(userId){
+  const pwd=(document.getElementById('cum-pwd')?.value||'').trim();
+  if(!pwd||pwd.length<6){toast('Password must be at least 6 characters');return;}
+  const u=USERS.find(x=>x.id===userId);
+  if(!u){toast('User not found');return;}
+  try{
+    var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
+    await fbUpd('users/'+userId,{pendingPasswordReset:pwd});
+    await db.ref('client_activations/'+emailKey).set({userId:userId,email:u.email,tempPass:pwd,createdAt:today()}).catch(function(){});
+    toast('✓ Password set — share with client: '+pwd);
+    closeModal(); render();
+  }catch(e){toast('Error: '+e.message);}
+}
 function settClientUsersHTML(){
   if(!window._clientUserSearch) window._clientUserSearch='';
   // Silently backfill any client users missing from client_activations
@@ -12306,21 +12380,13 @@ function settClientUsersHTML(){
   ${filtered.map(u=>{
     const cl=getClient(u.clientId);
     const isActive=u.active!==false;
-    return`<div class="list-item" style="flex-wrap:wrap;gap:6px">
-      <div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
+    return`<div class="list-item" style="cursor:pointer" data-uid="${u.id}" onclick="openClientUserModal(this.dataset.uid)">
+      <div class="avatar ${avClass(u.id)}" style="width:36px;height:36px;font-size:12px;flex-shrink:0">${initials(u.name)}</div>
       <div style="flex:1;min-width:0">
-        <div class="li-name">${u.name}${!isActive?'<span style="font-size:10px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:1px 5px;margin-left:6px">Inactive</span>':''}</div>
-        <div class="li-sub">${u.email||'no email'}${cl?' · '+cl.name:' · no client linked'}</div>
+        <div class="li-name">${u.name}${!isActive?'<span style="font-size:10px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:1px 5px;margin-left:6px">Inactive</span>':u.pendingPasswordReset?'<span style="font-size:10px;background:#fef9c3;color:#ca8a04;border-radius:4px;padding:1px 5px;margin-left:6px">Pwd pending</span>':''}</div>
+        <div class="li-sub">${u.email||'no email'}${cl?' · '+cl.name:' · <span style="color:var(--red)">no client linked</span>'}</div>
       </div>
-      <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
-        ${u.pendingPasswordReset?`<button class="btn btn-ghost btn-xs" style="color:var(--blue)" data-uid="${u.id}" onclick="viewClientPwd(this.dataset.uid)">👁 Pwd</button>`:''}
-        <button class="btn btn-ghost btn-xs" data-uid="${u.id}" onclick="setClientPassword(this.dataset.uid)">🔑 Set pwd</button>
-        ${isActive
-          ?`<button class="btn btn-ghost btn-xs" style="color:var(--amber)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,false)">Deactivate</button>`
-          :`<button class="btn btn-ghost btn-xs" style="color:var(--green,#4ade80)" data-uid="${u.id}" onclick="toggleClientUserActive(this.dataset.uid,true)">Reactivate</button>`
-        }
-        <button class="btn btn-ghost btn-xs" style="color:var(--red)" data-uid="${u.id}" onclick="deleteClientUser(this.dataset.uid)">🗑 Delete</button>
-      </div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
     </div>`;
   }).join('')}`;
 }

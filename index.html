@@ -459,6 +459,10 @@ body{font-size:var(--base-font)}
 .task-list-wrap .task-row{display:block;width:100%;box-sizing:border-box}
 /* ── GROUP HEADER ── */
 .group-hdr{display:flex;align-items:center;gap:8px;margin:14px 0 8px;padding:6px 10px;background:var(--bg3);border-radius:var(--r);border-left:3px solid var(--border2)}
+/* ── CLIENT PORTAL ── */
+.client-portal .side-nav{display:none!important}
+.client-portal .main-area{margin-left:0!important;padding:16px}
+.client-portal .mobile-menu-btn{display:none!important}
 
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -5507,8 +5511,9 @@ function clientPortalPage(){
   return`<div style="max-width:720px;margin:0 auto;font-size:15px">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
     <div>
-      <div style="font-size:18px;font-weight:700">${c.name}</div>
-      <div style="font-size:11px;color:var(--text3);margin-top:2px">Client Portal · Welcome, ${currentUser.name}</div>
+      <div style="font-size:20px;font-weight:700;line-height:1.2">${currentUser.name}</div>
+      <div style="font-size:13px;color:var(--text3);margin-top:3px">🏢 ${c.name}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:1px">Client Portal</div>
     </div>
     <button class="btn btn-danger btn-sm" onclick="doLogout()">Logout</button>
   </div>
@@ -7969,7 +7974,7 @@ function render(){
     const _sp=searchPortalOpen?searchPortalHTML():'';
     const _bb=bulkMode&&selectedTasks.size>0?bulkBarHTML():'';
     const _fab=currentUser&&curPage!=='settings'?'<div class="fab-wrap"><button class="fab-hint" onclick="openModal(\'newReminder\',{})">🔔 Add Reminder</button><button class="fab" id="fab-new-task" title="New Task (N)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>':'';
-    app.innerHTML=_tb+'<div class="app-shell">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(isClientUser()?' nav-collapsed':navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
+    app.innerHTML=_tb+'<div class="app-shell'+(isClientUser()?' client-portal':'')+'">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(isClientUser()?' nav-collapsed':navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
     bindAll();
   } catch(e) {
     console.error('[TaskHub render error]', e);
@@ -8381,7 +8386,7 @@ function topBarHTML(){
     <div class="user-pill" onclick="doLogout()" title="Logout">
       <div class="avatar ${avClass(u.id)}" style="width:26px;height:26px;font-size:10px">${initials(u.name)}</div>
       <span class="uname">${shortName(u.name)}</span>
-      <span class="role-badge">${u.role==='superadmin'?'Admin':u.role==='manager'?'Mgr':'Staff'}</span>
+      <span class="role-badge">${u.role==='superadmin'?'Admin':u.role==='manager'?'Mgr':u.role==='client'?'Client':'Staff'}</span>
     </div>
     <button onclick="darkMode=!darkMode;LS.set('darkMode',darkMode);document.documentElement.setAttribute('data-theme',darkMode?'dark':'light')" style="background:none;border:none;cursor:pointer;font-size:17px;padding:4px 8px;color:var(--text2)" title="Toggle theme">${darkMode?'☀':'🌙'}</button>
   </div>`;

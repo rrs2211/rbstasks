@@ -5593,10 +5593,13 @@ async function cpChangePassword(){
     const user=auth.currentUser;
     if(!user){toast('Not signed in');return;}
     await user.updatePassword(p1);
+    // Keep client_activations in sync so admin reset works
+    var _ek=btoa(currentUser.email).replace(/[^a-zA-Z0-9]/g,'_');
+    db.ref('client_activations/'+_ek).update({currentPass:btoa(p1),tempPass:p1}).catch(function(){});
     toast('✓ Password updated successfully');
     render();
   }catch(e){
-    if(e.code==='auth/requires-recent-login'){toast('Please log out and log in again, then change your password.');return;}
+    if(e.code==='auth/requires-recent-login'){toast('Session expired. Please log out and log in again, then change your password.');return;}
     toast('Error: '+e.message);
   }
 }

@@ -8295,7 +8295,7 @@ async function doEmailLogin(){
             await finishLogin(cred,realEmail);
             return;
           }catch(newPwErr){
-            loginError='Incorrect password. Contact admin to reset your password.';
+            loginError='Incorrect password. Check your email for a reset link, or contact admin.';
             loginLoading=false;renderLogin();return;
           }
         } else {
@@ -12326,7 +12326,7 @@ function clientUserAdminHTML(userId){
     </div>
   </div>
   <div style="margin-bottom:12px">
-    <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Set Password${u.pendingPasswordReset?` <span style="color:var(--amber);font-weight:400">(pending: ${escHtml(u.pendingPasswordReset)})</span>`:''}</label>
+    <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Set Password${u.pendingPasswordReset?` <span style="color:var(--amber);font-weight:400">(reset email sent — pending activation)</span>`:''}</label>
     <div style="display:flex;gap:8px">
       <input id="cum-pwd" class="form-input" placeholder="New password (min 6 chars)" style="flex:1"/>
       <button class="btn btn-sm" data-uid="${u.id}" onclick="adminSetClientPwdInline(this.dataset.uid)">Set</button>
@@ -12358,7 +12358,10 @@ async function adminSetClientPwdInline(userId){
     var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
     await fbUpd('users/'+userId,{pendingPasswordReset:pwd});
     await db.ref('client_activations/'+emailKey).set({userId:userId,email:u.email,tempPass:pwd,createdAt:today()}).catch(function(){});
-    toast('✓ Password set — share with client: '+pwd);
+    // Send Firebase password reset email so Firebase Auth gets updated when client clicks it
+    var resetSent=false;
+    try{ await auth.sendPasswordResetEmail(u.email); resetSent=true; }catch(_){}
+    toast('✓ Password stored: '+pwd+(resetSent?' — reset email sent to '+u.email:' — share password with client'));
     closeModal(); render();
   }catch(e){toast('Error: '+e.message);}
 }

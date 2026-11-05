@@ -8295,7 +8295,7 @@ async function doEmailLogin(){
             await finishLogin(cred,realEmail);
             return;
           }catch(newPwErr){
-            loginError='Incorrect password. Check your email for a reset link, or contact admin.';
+            loginError='Incorrect password. Contact admin to reset your password, or use Forgot password.';
             loginLoading=false;renderLogin();return;
           }
         } else {
@@ -12356,12 +12356,41 @@ async function adminSetClientPwdInline(userId){
   if(!u){toast('User not found');return;}
   try{
     var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
+    // Step 1: Get the old tempPass so we can sign in as the client and delete their Firebase Auth account
+    var oldActSnap=await db.ref('client_activations/'+emailKey).once('value').catch(function(){return null;});
+    var oldAct=oldActSnap&&oldActSnap.val?oldActSnap.val():null;
+    var oldPwd=oldAct&&oldAct.tempPass?oldAct.tempPass:null;
+    // Step 2: Try to delete the client's Firebase Auth account via REST API
+    // This forces a fresh account creation with the new password on next login
+    var deleted=false;
+    if(oldPwd){
+      try{
+        // Sign in as client to get their idToken
+        var signInResp=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyC-PPxwQx7dsYywxM1fl_rP3qgbXe1LdM4',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({email:u.email,password:oldPwd,returnSecureToken:true})
+        });
+        var signInData=await signInResp.json();
+        if(signInData.idToken){
+          // Delete the account using their idToken
+          var delResp=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:delete?key=AIzaSyC-PPxwQx7dsYywxM1fl_rP3qgbXe1LdM4',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({idToken:signInData.idToken})
+          });
+          var delData=await delResp.json();
+          if(!delData.error) deleted=true;
+        }
+      }catch(_){}
+    }
+    // Step 3: Store new password in DB and client_activations
     await fbUpd('users/'+userId,{pendingPasswordReset:pwd});
     await db.ref('client_activations/'+emailKey).set({userId:userId,email:u.email,tempPass:pwd,createdAt:today()}).catch(function(){});
-    // Send Firebase password reset email so Firebase Auth gets updated when client clicks it
-    var resetSent=false;
-    try{ await auth.sendPasswordResetEmail(u.email); resetSent=true; }catch(_){}
-    toast('✓ Password stored: '+pwd+(resetSent?' — reset email sent to '+u.email:' — share password with client'));
+    var msg=deleted
+      ?'✓ Password set to: '+pwd+'. Client can now log in with new password immediately.'
+      :'✓ Password set to: '+pwd+(oldPwd?'. Old password unchanged in Firebase Auth — have client click “Forgot password?” to reset.':'. Client can log in with this password.');
+    toast(msg);
     closeModal(); render();
   }catch(e){toast('Error: '+e.message);}
 }

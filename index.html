@@ -12102,8 +12102,31 @@ async function addManualTime(){
 }
 
 // ── Users ──
+async function backfillClientActivations(){
+  const clientUsers=USERS.filter(u=>u.role==='client'&&u.email);
+  for(const u of clientUsers){
+    try{
+      var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
+      var snap=await db.ref('client_activations/'+emailKey).once('value');
+      if(!snap.val()){
+        // No activation record - create one so this user can log in
+        var tempPass=u.pendingPasswordReset||('Client@'+Math.random().toString(36).slice(2,8));
+        await db.ref('client_activations/'+emailKey).set({userId:u.id,email:u.email,tempPass,backfilled:true,createdAt:today()});
+        // Also set pendingPasswordReset on the user record if not already set
+        if(!u.pendingPasswordReset){
+          await fbUpd('users/'+u.id,{pendingPasswordReset:tempPass});
+        }
+      }
+    }catch(_){}
+  }
+}
 function settClientUsersHTML(){
   if(!window._clientUserSearch) window._clientUserSearch='';
+  // Silently backfill any client users missing from client_activations
+  if(!window._caBackfillDone){
+    window._caBackfillDone=true;
+    backfillClientActivations();
+  }
   const clientUsers=USERS.filter(u=>u.role==='client');
   const q=(window._clientUserSearch||'').toLowerCase();
   const filtered=q?clientUsers.filter(u=>(u.name||'').toLowerCase().includes(q)||(u.email||'').toLowerCase().includes(q)||(getClient(u.clientId)?.name||'').toLowerCase().includes(q)):clientUsers;
@@ -12124,6 +12147,7 @@ function settClientUsersHTML(){
       </div>
       <div style="display:flex;gap:5px;flex-shrink:0">
         <button class="btn btn-ghost btn-xs" onclick="resetClientUserPassword('${u.id}')">🔑 Reset pwd</button>
+        ${u.pendingPasswordReset?`<button class="btn btn-ghost btn-xs" style="color:var(--blue)" onclick="alert('Login details for '+u.name+':\\n\\nEmail: '+u.email+'\\nTemp password: '+u.pendingPasswordReset+'\\n\\nThey will be asked to set a new password on first login.')">👁 View pwd</button>`:''}
         ${isActive
           ?`<button class="btn btn-ghost btn-xs" style="color:var(--amber)" onclick="toggleClientUserActive('${u.id}',false)">Deactivate</button>`
           :`<button class="btn btn-ghost btn-xs" style="color:var(--green,#4ade80)" onclick="toggleClientUserActive('${u.id}',true)">Reactivate</button>`
@@ -12138,7 +12162,9 @@ async function resetClientUserPassword(userId){
   if(!confirm('Reset password for '+u.name+'?\nA temporary password will be generated.\nShare it securely — they will be prompted to change it on next login.')) return;
   const tempPass='Client@'+Math.random().toString(36).slice(2,8);
   try{
+    var emailKey=btoa(u.email).replace(/[^a-zA-Z0-9]/g,'_');
     await fbUpd('users/'+userId,{pendingPasswordReset:tempPass});
+    await db.ref('client_activations/'+emailKey).set({userId,email:u.email,tempPass,createdAt:today()}).catch(function(){});
     alert('Temporary password for '+u.name+':\n\n'+tempPass+'\n\nPlease share this securely. They will be asked to set a new password on next login.');
     toast('✓ Password reset for '+u.name);
     render();

@@ -5483,41 +5483,199 @@ function isClientUser(){ return currentUser.role==='client'; }
 function clientPortalPage(){
   const c=CLIENTS.find(cl=>cl.id===currentUser.clientId);
   if(!c) return '<div style="padding:2rem;color:var(--red)">No client linked to your account. Contact admin.</div>';
-  const tasks=TASKS.filter(t=>t.clientId===c.id&&!isTaskTerminal(t));
-  const done=TASKS.filter(t=>t.clientId===c.id&&isTaskTerminal(t));
-  return`<div class="page-header">
-    <div class="page-title">${c.name} — Task Portal</div>
-    <button class="btn btn-primary btn-sm" onclick="openModal('newTask',{prefillClientId:'${c.id}'})">+ New Task</button>
+  if(!window._cpTab) window._cpTab='tasks';
+  const tab=window._cpTab;
+  const allTasks=TASKS.filter(t=>t.clientId===c.id);
+  const activeTasks=allTasks.filter(t=>!isTaskTerminal(t));
+  const doneTasks=allTasks.filter(t=>isTaskTerminal(t));
+  // Count docs across all tasks
+  const docCount=allTasks.reduce((n,t)=>{
+    const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
+    return n+atts.length;
+  },0);
+  // Invoices
+  const invoices=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id);
+
+  const tabs=[
+    {id:'tasks',label:'📋 Tasks',count:activeTasks.length},
+    {id:'newreq',label:'➕ New Request'},
+    {id:'docs',label:'📁 Documents',count:docCount||null},
+    {id:'invoices',label:'🧾 Invoices',count:invoices.length||null},
+  ];
+
+  return`<div style="max-width:720px;margin:0 auto">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <div>
+      <div style="font-size:18px;font-weight:700">${c.name}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">Client Portal · Welcome, ${currentUser.name}</div>
+    </div>
+    <button class="btn btn-danger btn-sm" onclick="doLogout()">Logout</button>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px">
-    <div class="stat-card"><div class="sc-label">Active Tasks</div><div class="sc-val">${tasks.length}</div></div>
-    <div class="stat-card"><div class="sc-label">Completed</div><div class="sc-val">${done.length}</div></div>
+
+  <div style="display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:16px;overflow-x:auto">
+    ${tabs.map(t=>`<button onclick="window._cpTab='${t.id}';render()"
+      style="padding:7px 14px;font-size:12px;font-weight:600;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid ${tab===t.id?'var(--accent)':'transparent'};margin-bottom:-2px;color:${tab===t.id?'var(--accent)':'var(--text2)'};transition:color .15s">
+      ${t.label}${t.count!=null?`<span style="font-size:10px;background:var(--accent);color:#fff;border-radius:9px;padding:0 5px;margin-left:4px">${t.count}</span>`:''}
+    </button>`).join('')}
   </div>
-  <div style="font-size:12px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Active Tasks</div>
-  ${tasks.length?tasks.map(t=>`<div class="card mb-8" style="border-left:3px solid ${statusColor(t.status)}">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-      <div>
-        <div style="font-size:13px;font-weight:600">${t.title}</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:3px">${getDept(t.deptId)?.name||''} · Due: ${fmtDate(t.dueDate)||'Not set'}</div>
+
+  ${tab==='tasks'?cpTasksTab(activeTasks,doneTasks):''}
+  ${tab==='newreq'?cpNewRequestTab(c):''}
+  ${tab==='docs'?cpDocsTab(allTasks):''}
+  ${tab==='invoices'?cpInvoicesTab(invoices):''}
+  </div>`;
+}
+
+function cpTasksTab(activeTasks,doneTasks){
+  return`<div>
+  ${activeTasks.length===0?'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No active tasks right now. Use ➕ New Request to submit one.</div>':''}
+  ${activeTasks.map(t=>{
+    const assignees=taskAssignees(t);
+    const pct=t.checklistItems&&t.checklistItems.length?Math.round(t.checklistItems.filter(x=>x.done).length/t.checklistItems.length*100):null;
+    return`<div class="card mb-10" style="border-left:3px solid ${statusColor(t.status)}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${getDept(t.deptId)?.name||''}${t.dueDate?' · Due '+fmtDate(t.dueDate):''}</div>
+        </div>
+        <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0">${t.status}</span>
       </div>
-      <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap">${t.status}</span>
-    </div>
-    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-      <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${t.id}'})">View Details / Attach File</button>
-    </div>
-  </div>`).join(''):'<div style="color:var(--text3);font-size:12px;padding:1rem">No active tasks</div>'}
-  ${done.length?`<details><summary style="cursor:pointer;font-size:12px;color:var(--text3);margin-top:12px">▸ ${done.length} completed tasks</summary>
-    ${done.map(t=>`<div class="card mb-4" style="opacity:.7">
-      <div style="font-size:12px;font-weight:500">${t.title}</div>
-      <div style="font-size:10px;color:var(--text3)">${t.status} · ${fmtDate(t.dueDate)||''}</div>
+      ${assignees.length?`<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+        <span style="font-size:10px;color:var(--text3)">Assigned to:</span>
+        <div style="display:flex;gap:3px;flex-wrap:wrap">
+          ${assignees.map(a=>`<span style="font-size:11px;background:var(--bg3);border-radius:10px;padding:1px 7px">${a.name}</span>`).join('')}
+        </div>
+      </div>`:''}
+      ${pct!=null?`<div style="margin-bottom:8px"><div style="height:4px;background:var(--border);border-radius:2px"><div style="height:4px;background:var(--accent);border-radius:2px;width:${pct}%"></div></div><div style="font-size:10px;color:var(--text3);margin-top:2px">${pct}% complete</div></div>`:''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${t.id}'})">📎 Docs &amp; Comments</button>
+      </div>
+    </div>`;
+  }).join('')}
+  ${doneTasks.length?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text3);padding:4px 0">▸ ${doneTasks.length} completed task${doneTasks.length!==1?'s':''}</summary>
+    <div style="margin-top:8px">
+    ${doneTasks.map(t=>`<div class="card mb-6" style="opacity:.7;border-left:3px solid ${statusColor(t.status)}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
+        <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0;font-size:10px">${t.status}</span>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${fmtDate(t.dueDate)||''}</div>
     </div>`).join('')}
-  </details>`:''}`;
+    </div>
+  </details>`:''}
+  </div>`;
+}
+
+function cpNewRequestTab(c){
+  return`<div class="card">
+  <div style="font-size:14px;font-weight:600;margin-bottom:12px">Submit New Request</div>
+  <div style="margin-bottom:10px">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Task / Work Description <span style="color:var(--red)">*</span></label>
+    <input id="cpnr-title" class="form-input" placeholder="e.g. File GST return for Oct 2026" style="font-size:13px"/>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+    <div>
+      <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Required by Date</label>
+      <input id="cpnr-due" class="form-input" type="date" style="font-size:13px"/>
+    </div>
+    <div>
+      <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Priority</label>
+      <select id="cpnr-priority" class="form-select" style="font-size:13px">
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="low">Low</option>
+        <option value="urgent">Urgent</option>
+      </select>
+    </div>
+  </div>
+  <div style="margin-bottom:14px">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Additional Notes</label>
+    <textarea id="cpnr-notes" class="form-input" rows="3" placeholder="Any additional details or requirements…" style="font-size:12px;resize:vertical"></textarea>
+  </div>
+  <button class="btn btn-primary w-full" onclick="cpSubmitNewRequest('${c.id}')">Submit Request</button>
+  </div>`;
+}
+
+async function cpSubmitNewRequest(clientId){
+  const title=(document.getElementById('cpnr-title')?.value||'').trim();
+  const dueDate=document.getElementById('cpnr-due')?.value||'';
+  const priority=document.getElementById('cpnr-priority')?.value||'medium';
+  const notes=(document.getElementById('cpnr-notes')?.value||'').trim();
+  if(!title){toast('Please enter a task description');return;}
+  const task={
+    id:uid(),title,clientId,
+    status:'Pending',priority,
+    dueDate,description:notes,
+    createdAt:today(),createdByClientId:currentUser.id,
+    assignedTo:[],deptId:''
+  };
+  try{
+    await db.ref('tasks/'+task.id).set(task);
+    toast('✓ Request submitted');
+    window._cpTab='tasks';
+    render();
+  }catch(e){toast('Error submitting: '+e.message);}
+}
+
+function cpDocsTab(allTasks){
+  const rows=[];
+  allTasks.forEach(t=>{
+    const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
+    atts.forEach(a=>rows.push({task:t,att:a}));
+  });
+  return`<div>
+  ${rows.length===0?'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No documents yet. Open a task to upload documents.</div>':''}
+  ${rows.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+    <div style="font-size:20px">📄</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.att.name||r.att.key}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:1px">${r.task.title}</div>
+    </div>
+    <div style="display:flex;gap:5px;flex-shrink:0">
+      ${R2_CFG?`<a href="${R2_CFG.workerUrl}/download?key=${encodeURIComponent(r.att.key)}" target="_blank" class="btn btn-ghost btn-xs">⬇ Download</a>`:''}
+      <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${r.task.id}'})">View task</button>
+    </div>
+  </div>`).join('')}
+  </div>`;
+}
+
+function cpInvoicesTab(invoices){
+  if(!invoices.length) return'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No invoices raised yet.</div>';
+  const total=invoices.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
+  const unpaid=invoices.filter(inv=>inv.status!=='paid'&&inv.status!=='cancelled');
+  const unpaidAmt=unpaid.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
+  return`<div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+    <div class="stat-card"><div class="sc-label">Total Invoiced</div><div class="sc-val" style="font-size:16px">₹${total.toLocaleString('en-IN')}</div></div>
+    <div class="stat-card"><div class="sc-label">Outstanding</div><div class="sc-val" style="font-size:16px;color:${unpaidAmt>0?'var(--amber)':'var(--green,#4ade80)'}">₹${unpaidAmt.toLocaleString('en-IN')}</div></div>
+  </div>
+  ${invoices.sort((a,b)=>(b.date||b.createdAt||'').localeCompare(a.date||a.createdAt||'')).map(inv=>{
+    const amt=parseFloat(inv.amount||inv.total||0);
+    const paid=inv.status==='paid';
+    const cancelled=inv.status==='cancelled';
+    return`<div class="card mb-8" style="border-left:3px solid ${paid?'var(--green,#4ade80)':cancelled?'var(--text3)':'var(--amber)'}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div>
+          <div style="font-size:12px;font-weight:700">${inv.invoiceNo||inv.id}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${inv.description||''}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:1px">${fmtDate(inv.date||inv.createdAt)||''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="font-size:14px;font-weight:700">₹${amt.toLocaleString('en-IN')}</div>
+          <span style="font-size:10px;padding:2px 7px;border-radius:9px;background:${paid?'var(--green-bg)':cancelled?'var(--bg3)':'var(--amber-bg)'};color:${paid?'var(--green,#4ade80)':cancelled?'var(--text3)':'var(--amber)'}">${inv.status||'pending'}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('')}
+  </div>`;
 }
 
 function clientTaskDetailHTML(data){
   const t=TASKS.find(x=>x.id===data?.id);
   if(!t)return mHdr('Task')+'<p style="padding:12px">Not found.</p>';
   const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
+  const assignees=taskAssignees(t);
+  const comments=(t.comments||[]).slice().sort((a,b)=>(a.at||'').localeCompare(b.at||''));
   return`${mHdr(t.title)}
   <div style="background:var(--bg3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
@@ -5526,15 +5684,48 @@ function clientTaskDetailHTML(data){
       <div><span style="color:var(--text3)">Department</span><div>${getDept(t.deptId)?.name||'—'}</div></div>
       <div><span style="color:var(--text3)">Priority</span><div>${t.priority||'—'}</div></div>
     </div>
+    ${assignees.length?`<div style="margin-top:6px;font-size:11px"><span style="color:var(--text3)">Assigned to: </span>${assignees.map(a=>a.name).join(', ')}</div>`:''}
   </div>
   <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📎 Documents</div>
   ${atts.length?atts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
-    <span>📄</span><span style="flex:1">${a.name}</span>
-    <a href="${R2_CFG?R2_CFG.workerUrl+'/download?key='+encodeURIComponent(a.key):'#'}" target="_blank" class="btn btn-ghost btn-xs">⬇ Download</a>
-  </div>`).join(''):'<div style="font-size:11px;color:var(--text3);margin-bottom:10px">No documents yet</div>'}
-  <div style="margin-top:10px">
-    <label class="btn btn-ghost btn-sm" style="cursor:pointer">📎 Upload Document <input type="file" style="display:none" onchange="uploadAttachment('${t.id}',this.files[0])"/></label>
+    <span>📄</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.name||a.key}</span>
+    ${R2_CFG?`<a href="${R2_CFG.workerUrl}/download?key=${encodeURIComponent(a.key)}" target="_blank" class="btn btn-ghost btn-xs">⬇</a>`:''}
+  </div>`).join(''):'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">No documents yet</div>'}
+  <div style="margin-top:8px;margin-bottom:16px">
+    <label class="btn btn-ghost btn-sm" style="cursor:pointer">📎 Upload Document<input type="file" style="display:none" onchange="uploadAttachment('${t.id}',this.files[0])"/></label>
+  </div>
+  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">💬 Comments</div>
+  <div id="ctd-comments" style="margin-bottom:10px">
+  ${comments.length===0?'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">No comments yet</div>':''}
+  ${comments.map(cm=>{
+    const isMe=cm.authorId===currentUser.id||cm.author===currentUser.name;
+    return`<div style="margin-bottom:8px;display:flex;flex-direction:column;align-items:${isMe?'flex-end':'flex-start'}">
+      <div style="max-width:85%;background:${isMe?'var(--blue-bg)':'var(--bg3)'};border-radius:10px;padding:7px 10px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:3px">${cm.author||'Unknown'}${cm.at?' · '+fmtDate(cm.at):''}</div>
+        <div style="font-size:12px;white-space:pre-wrap">${cm.text||''}</div>
+      </div>
+    </div>`;
+  }).join('')}
+  </div>
+  <div style="display:flex;gap:6px">
+    <input id="ctd-comment-input" class="form-input" placeholder="Add a comment…" style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addClientComment('${t.id}');}"/>
+    <button class="btn btn-primary btn-sm" onclick="addClientComment('${t.id}')">Send</button>
   </div>`;
+}
+
+async function addClientComment(taskId){
+  const inp=document.getElementById('ctd-comment-input');
+  const text=(inp?.value||'').trim();
+  if(!text){toast('Enter a comment');return;}
+  const comment={id:uid(),text,author:currentUser.name,authorId:currentUser.id,at:new Date().toISOString().slice(0,10),role:'client'};
+  try{
+    const t=TASKS.find(x=>x.id===taskId);
+    const existing=Array.isArray(t?.comments)?t.comments:[];
+    await fbUpd('tasks/'+taskId,{comments:[...existing,comment]});
+    if(inp)inp.value='';
+    toast('✓ Comment added');
+    render();
+  }catch(e){toast('Error: '+e.message);}
 }
 
 
@@ -5595,6 +5786,9 @@ async function approveClientSignup(reqId, selectedClientId){
   try{
     await db.ref('users/'+userId).set(userRecord);
     await db.ref('client_signup_requests/'+reqId).update({status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId,linkedClientId:clientId});
+    // Write public activation record so client can bootstrap Firebase Auth on first login
+    var emailKey=btoa(req.email).replace(/[^a-zA-Z0-9]/g,'_');
+    await db.ref('client_activations/'+emailKey).set({userId,tempPass,email:req.email,createdAt:today()}).catch(function(){});
   }catch(e){
     const r2=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
     if(r2){r2.status='approved';r2.userId=userId;}
@@ -7799,13 +7993,27 @@ async function doEmailLogin(){
 
     // ── Load user record from DB now that we're authenticated ──────────────
     let matched=null;
+    // Try per-email query (works for staff, may be blocked for clients)
     try {
       const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
       const val=snap.val();
       if(val) matched=Object.values(val)[0];
     } catch(_){}
 
-    // Fallback: scan all users
+    // Fallback via client_activations index (public read, no auth needed)
+    if(!matched){
+      try{
+        const emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
+        const actSnap=await db.ref('client_activations/'+emailKey).once('value');
+        const actVal=actSnap.val();
+        if(actVal&&actVal.userId){
+          const uSnap=await db.ref('users/'+actVal.userId).once('value');
+          if(uSnap.val()) matched=uSnap.val();
+        }
+      }catch(_){}
+    }
+
+    // Last resort: scan all users (staff only - clients can't read /users)
     if(!matched){
       try {
         const snap=await db.ref('users').once('value');
@@ -7865,8 +8073,19 @@ async function doEmailLogin(){
     if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'){
       // No Firebase Auth account yet — try to auto-create using pending password or entered password
       try {
-        var usnap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
-        var uval=usnap.val()?Object.values(usnap.val())[0]:null;
+        // Try public client_activations index first (works without auth)
+        var emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
+        var actSnap=await db.ref('client_activations/'+emailKey).once('value').catch(function(){return null;});
+        var actVal=actSnap&&actSnap.val?actSnap.val():null;
+        var uval=null;
+        if(!actVal){
+          // Fallback: try authenticated query (works for staff)
+          var usnap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value').catch(function(){return null;});
+          uval=usnap&&usnap.val&&usnap.val()?Object.values(usnap.val())[0]:null;
+        } else {
+          // Got activation record - build a minimal uval from it
+          uval={id:actVal.userId,email:actVal.email,pendingPasswordReset:actVal.tempPass};
+        }
         if(!uval){loginError='No account found for this email. Contact your admin.';renderLogin();return;}
         // Use admin-set password if available, otherwise use entered password
         var activatePass=uval.pendingPasswordReset||password;

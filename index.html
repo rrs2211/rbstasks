@@ -7973,6 +7973,61 @@ function updatePinDots(){
   });
 }
 
+async function finishLogin(cred, realEmail){
+  // Load user record from DB now that we're authenticated
+  let matched=null;
+  try {
+    const snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
+    const val=snap.val();
+    if(val) matched=Object.values(val)[0];
+  } catch(_){}
+  if(!matched){
+    try{
+      const emailKey=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
+      const actSnap=await db.ref('client_activations/'+emailKey).once('value');
+      const actVal=actSnap.val();
+      if(actVal&&actVal.userId){
+        const uSnap=await db.ref('users/'+actVal.userId).once('value');
+        if(uSnap.val()) matched=uSnap.val();
+      }
+    }catch(_){}
+  }
+  if(!matched){
+    try {
+      const snap=await db.ref('users').once('value');
+      const all=snap.val()?Object.values(snap.val()):[];
+      matched=all.find(u=>(u.email||'').toLowerCase()===realEmail);
+    } catch(_){}
+  }
+  if(!matched){
+    await auth.signOut();
+    loginLoading=false;
+    loginError='Authenticated but no user record found. Contact admin.';
+    renderLogin();return;
+  }
+  if(matched.active===false){
+    await auth.signOut();
+    loginLoading=false;
+    loginError='Your account has been deactivated. Contact your admin.';
+    renderLogin();return;
+  }
+  currentUser={...matched,pendingPasswordReset:null};
+  LS.set('currentUser',{id:currentUser.id,name:currentUser.name,role:currentUser.role,email:currentUser.email,deptId:currentUser.deptId,deptIds:currentUser.deptIds,firmId:currentUser.firmId,active:currentUser.active,billingEnabled:currentUser.billingEnabled,photoUrl:currentUser.photoUrl||null});
+  loginEmail='';loginPassword='';loginError='';loginLoading=false;
+  loginSelectedUser=null;
+  Object.keys(loaded).forEach(k=>loaded[k]=false);
+  loaded.timer=true;
+  db.ref().off();
+  startListeners();
+  db.ref('active_timers/'+currentUser.id).on('value',s=>{
+    activeTimer=s.val()||null;
+    clearInterval(timerInterval);timerInterval=null;
+    if(activeTimer)timerInterval=setInterval(tickTimer,1000);
+    rerender();
+  });
+  requestDesktopNotifPermission();
+  render();
+}
 async function doEmailLogin(){
   const emailInp=document.getElementById('login-email');
   const passInp=document.getElementById('login-password');
@@ -8083,7 +8138,7 @@ async function doEmailLogin(){
 
   } catch(e){
     loginLoading=false;
-    if(e.code==='auth/user-not-found'||e.code==='auth/invalid-credential'){
+    if(e.code==='auth/user-not-found'){
       // No Firebase Auth account yet — try to auto-create using pending password or entered password
       try {
         // Try public client_activations index first (works without auth)
@@ -8110,7 +8165,8 @@ async function doEmailLogin(){
           } else {
             toast('\u2713 Account activated. Use this password to log in next time.');
           }
-          // Fall through to complete login below
+          await finishLogin(cred,realEmail);
+          return;
         } catch(ce){
           if(ce.code==='auth/email-already-in-use'){
             // Account exists but signIn failed — try with pending password
@@ -8119,6 +8175,8 @@ async function doEmailLogin(){
                 cred=await auth.signInWithEmailAndPassword(realEmail,uval.pendingPasswordReset);
                 await fbUpd('users/'+uval.id,{pendingPasswordReset:null});
                 toast('\u2713 Password updated by admin applied successfully.');
+                await finishLogin(cred,realEmail);
+                return;
               } catch(_){loginError='Incorrect password. Contact your admin to reset it.';renderLogin();return;}
             } else {
               loginError='Incorrect password.';renderLogin();return;
@@ -8128,18 +8186,30 @@ async function doEmailLogin(){
           }
         }
       } catch(qe){loginError='Login error: '+qe.message;renderLogin();return;}
-    } else if(e.code==='auth/wrong-password'){
-      // Check if admin set a pending password reset
+    } else if(e.code==='auth/wrong-password'||e.code==='auth/invalid-credential'){
+      // Check if admin set a pending password reset (use client_activations for clients — /users is blocked)
       try{
-        var snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value');
-        var udata=snap.val()?Object.values(snap.val())[0]:null;
+        var emailKey2=btoa(realEmail).replace(/[^a-zA-Z0-9]/g,'_');
+        var actSnap2=await db.ref('client_activations/'+emailKey2).once('value').catch(function(){return null;});
+        var actVal2=actSnap2&&actSnap2.val?actSnap2.val():null;
+        var udata=null;
+        if(actVal2&&actVal2.userId){
+          // Client path: get pending password from client_activations
+          udata={id:actVal2.userId,email:actVal2.email,pendingPasswordReset:actVal2.tempPass};
+        } else {
+          // Staff path: query /users directly
+          var snap=await db.ref('users').orderByChild('email').equalTo(realEmail).once('value').catch(function(){return null;});
+          udata=snap&&snap.val&&snap.val()?Object.values(snap.val())[0]:null;
+        }
         if(udata&&udata.pendingPasswordReset){
           // Try signing in with the new password
           try{
             cred=await auth.signInWithEmailAndPassword(realEmail,udata.pendingPasswordReset);
             await fbUpd('users/'+udata.id,{pendingPasswordReset:null});
-            toast('✓ Password updated. Use this new password from now on.');
-            // Don't return - fall through to complete login
+            toast('✓ Password updated by admin applied successfully.');
+            // Complete login
+            await finishLogin(cred,realEmail);
+            return;
           }catch(newPwErr){
             loginError='Incorrect password. Contact admin to reset your password.';
             loginLoading=false;renderLogin();return;

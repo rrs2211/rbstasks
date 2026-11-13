@@ -1,4 +1,4 @@
-<!DOC<div class="sett-item" onclick="navigate('workflow')"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg></div><div class="sett-label">Workflows</div></div>TYPE html>
+<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF
@@ -5168,18 +5168,33 @@ function billingInvoiceHTML(data){
   const multiTask=tasks.length>1;
   const clientId=tasks[0]?.clientId||'';
   const cl=getClient(clientId)||{};
-  const firm=FIRMS&&FIRMS[0]?FIRMS[0]:{};
-  const hasGstin=!!(firm.gstin);
+  // Firms list — CA_FIRMS + FIRMS
+  const allFirms=[...((window.CA_FIRMS||[]).filter(f=>f.active!==false)),(FIRMS&&FIRMS[0]?[FIRMS[0]]:[])].flat().filter(Boolean);
+  const defaultFirm=allFirms[0]||{};
+  const hasGstin=!!(defaultFirm.gstin);
   return`${mHdr((multiTask?'Raise Invoice — '+tasks.length+' Tasks':'Raise Invoice'))}
   <!-- Tasks covered -->
-  <div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:12px;max-height:120px;overflow-y:auto">
+  <div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:12px;max-height:100px;overflow-y:auto">
     <div style="font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Tasks Covered</div>
     ${tasks.map(t=>`<div style="font-size:11px;padding:2px 0;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
       <span>${escHtml(t.title)}</span>
       <span style="color:var(--text3)">${t.seconds?Math.round(t.seconds/36)/100+'h':''}</span>
     </div>`).join('')}
   </div>
-  <!-- Invoice details -->
+  <!-- FOC toggle -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:var(--amber-bg,rgba(251,191,36,.08));border:1px solid rgba(251,191,36,.3);border-radius:var(--r)">
+    <input type="checkbox" id="inv-foc" onchange="billingInvoiceToggleFOC()"/>
+    <label for="inv-foc" style="font-size:12px;font-weight:600;cursor:pointer">🎁 Mark as FOC (Free of Charge) — no invoice raised, billing amount set to ₹0</label>
+  </div>
+  <!-- Invoice details (hidden when FOC) -->
+  <div id="inv-main-fields">
+  <!-- Firm selector -->
+  <div class="form-row" style="margin-bottom:10px"><label class="form-label">Invoicing Firm *</label>
+    <select class="form-select" id="inv-firm" onchange="billingInvoiceUpdateGST()">
+      ${allFirms.map(f=>`<option value="${f.id||''}" data-gstin="${f.gstin||''}">${escHtml(f.name||'')}</option>`).join('')}
+      ${allFirms.length===0?`<option value="">— No firms configured —</option>`:''}
+    </select>
+  </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
     <div class="form-row"><label class="form-label">Invoice Number *</label>
       <input class="form-input" id="inv-number" placeholder="INV-2025-001" autofocus/></div>
@@ -5194,16 +5209,17 @@ function billingInvoiceHTML(data){
   </div>
   <div class="form-row" style="margin-bottom:10px"><label class="form-label">Amount (₹) *</label>
     <input class="form-input" type="number" id="inv-amount" value="${totalAmt||''}" placeholder="Sub-total amount" oninput="billingInvoiceUpdateGST()"/></div>
-  ${hasGstin?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:var(--bg3);border-radius:var(--r)">
-    <input type="checkbox" id="inv-gst" onchange="billingInvoiceUpdateGST()" ${cl.gstin?'checked':''}/>
-    <label for="inv-gst" style="font-size:12px;cursor:pointer">Apply GST @ 18%${cl.gstin?' (Client GSTIN: '+escHtml(cl.gstin)+')':' (Client has no GSTIN — uncheck if not applicable)'}</label>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:var(--bg3);border-radius:var(--r)">
+    <input type="checkbox" id="inv-gst" onchange="billingInvoiceUpdateGST()" ${cl.gstin&&hasGstin?'checked':''}/>
+    <label for="inv-gst" style="font-size:12px;cursor:pointer">Apply GST @ 18%${cl.gstin?' (Client GSTIN: '+escHtml(cl.gstin)+')':' (Client has no GSTIN)'}</label>
   </div>
   <div id="inv-gst-row" style="display:flex;justify-content:space-between;padding:4px 10px;font-size:12px;color:var(--text2)">
     <span>GST @ 18%</span><span id="inv-gst-amt">₹0</span>
   </div>
   <div style="display:flex;justify-content:space-between;padding:6px 10px;font-size:13px;font-weight:700;border-top:1px solid var(--border);margin-bottom:10px">
     <span>Total</span><span id="inv-total-amt">₹${totalAmt.toLocaleString('en-IN')}</span>
-  </div>`:''}
+  </div>
+  </div><!-- end inv-main-fields -->
   <div class="form-row" style="margin-bottom:12px"><label class="form-label">Notes / Description</label>
     <textarea class="form-input" id="inv-notes" rows="2" placeholder="Optional notes for the invoice…" style="resize:vertical"></textarea></div>
   <div style="display:flex;gap:8px">
@@ -5213,8 +5229,17 @@ function billingInvoiceHTML(data){
 }
 
 function billingInvoiceUpdateGST(){
+  // Update GST row visibility based on selected firm's GSTIN
+  const firmSel=document.getElementById('inv-firm');
+  const selectedOpt=firmSel?firmSel.options[firmSel.selectedIndex]:null;
+  const firmGstin=selectedOpt?selectedOpt.getAttribute('data-gstin'):'';
+  const gstRow=document.getElementById('inv-gst-row');
+  const gstCheck=document.getElementById('inv-gst');
+  const gstLabel=gstCheck?gstCheck.parentElement:null;
+  if(gstLabel) gstLabel.style.display=firmGstin?'flex':'none';
+  if(gstRow) gstRow.style.display=(firmGstin&&gstCheck&&gstCheck.checked)?'flex':'none';
   const amt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;
-  const applyGst=document.getElementById('inv-gst')?.checked||false;
+  const applyGst=(gstCheck&&gstCheck.checked&&!!firmGstin)||false;
   const gst=applyGst?Math.round(amt*0.18*100)/100:0;
   const total=amt+gst;
   const gstEl=document.getElementById('inv-gst-amt');
@@ -5223,19 +5248,46 @@ function billingInvoiceUpdateGST(){
   if(totEl) totEl.textContent='₹'+total.toLocaleString('en-IN');
 }
 
+function billingInvoiceToggleFOC(){
+  const foc=document.getElementById('inv-foc')?.checked||false;
+  const mainFields=document.getElementById('inv-main-fields');
+  if(mainFields) mainFields.style.display=foc?'none':'block';
+  // Update button label
+  const btn=document.querySelector('[onclick="saveBillingInvoice()"]');
+  if(btn) btn.textContent=foc?'✓ Mark FOC (No Invoice)':'✓ Raise Invoice';
+}
+
 async function saveBillingInvoice(){
   const taskIds=_pendingInvoiceTaskIds||[];
+  const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
+  if(!tasks.length){toast('No tasks selected');return;}
+  const clientId=tasks[0]?.clientId||'';
+  const notes=(document.getElementById('inv-notes')?.value||'').trim();
+  const isFoc=document.getElementById('inv-foc')?.checked||false;
+  if(isFoc){
+    // FOC — mark tasks as free of cost, no invoice record
+    try{
+      for(const t of tasks){
+        await fbUpd('tasks/'+t.id,{billingStatus:'foc',billingAmount:0,invoiceNo:null,invoiceDate:null,invoiceId:null});
+      }
+      closeModal();
+      toast('✓ Marked as FOC — billing set to ₹0');
+    }catch(e){toast('Error: '+e.message);}
+    return;
+  }
+  // Regular invoice
   const invNo=(document.getElementById('inv-number')?.value||'').trim();
   const invDate=document.getElementById('inv-date')?.value||today();
   const invDueDate=document.getElementById('inv-duedate')?.value||'';
   const invAmt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;
   const applyGst=document.getElementById('inv-gst')?.checked||false;
-  const notes=(document.getElementById('inv-notes')?.value||'').trim();
   if(!invNo){toast('Invoice number is required');return;}
   if(!invAmt){toast('Amount is required');return;}
-  const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
-  if(!tasks.length){toast('No tasks selected');return;}
-  const clientId=tasks[0]?.clientId||'';
+  // Read selected firm
+  const firmSel=document.getElementById('inv-firm');
+  const firmId=firmSel?firmSel.value:'';
+  const allFirms=[...((window.CA_FIRMS||[]).filter(f=>f.active!==false)),(FIRMS&&FIRMS[0]?[FIRMS[0]]:[])].flat().filter(Boolean);
+  const firm=allFirms.find(f=>f.id===firmId)||allFirms[0]||{};
   const gstAmt=applyGst?Math.round(invAmt*0.18*100)/100:0;
   const totalWithGst=invAmt+gstAmt;
   // Create invoice record
@@ -5243,6 +5295,7 @@ async function saveBillingInvoice(){
   const invoice={
     id:invoiceId,invoiceNo:invNo,invoiceDate:invDate,dueDate:invDueDate||null,
     clientId,taskIds,amount:invAmt,applyGst,gstAmount:gstAmt,totalWithGst,
+    firmId:firm.id||null,firmName:firm.name||null,
     notes:notes||null,status:'pending',
     createdBy:currentUser.id,createdAt:today()
   };
@@ -5261,7 +5314,7 @@ async function saveBillingInvoice(){
         invoiceId,clientId,read:false,createdAt:new Date().toISOString()}).catch(function(){});
     }
     closeModal();
-    toast('✓ Invoice '+invNo+' raised — ₹'+totalWithGst.toLocaleString('en-IN')+(applyGst?' (incl. GST)':''));
+    toast('✓ Invoice '+invNo+' raised — ₹'+totalWithGst.toLocaleString('en-IN')+(applyGst?' (incl. GST)':'')+(firm.name?' from '+firm.name:''));
   }catch(e){toast('Error: '+e.message);}
 }
 
@@ -5542,7 +5595,32 @@ function clientPortalPage(){
   const activeTasks=allTasks.filter(t=>!isTaskTerminal(t));
   const doneTasks=allTasks.filter(t=>isTaskTerminal(t));
   const myReqs=allTasks.filter(t=>t.clientRequest&&t.clientRequest.requestedBy===currentUser.id);
-  const invoices=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id);
+  // Invoices from /invoices/ path (new billing module)
+  const dbInvoices=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id);
+  // Also synthesise invoice-like records from tasks with billingStatus:'invoiced' (old flow)
+  // Group by invoiceNo to avoid duplicates
+  const taskBilledByInvNo={};
+  allTasks.filter(t=>t.billingStatus==='invoiced'&&t.invoiceNo&&!dbInvoices.find(i=>i.invoiceNo===t.invoiceNo)).forEach(t=>{
+    const key=t.invoiceNo;
+    if(!taskBilledByInvNo[key]) taskBilledByInvNo[key]={
+      id:'task-inv-'+key,invoiceNo:key,invoiceDate:t.invoiceDate||t.billedDate||t.completedAt?.slice(0,10)||'',
+      clientId:c.id,taskIds:[t.id],amount:parseFloat(t.billingAmount||0),
+      applyGst:false,gstAmount:0,totalWithGst:parseFloat(t.billingAmount||0),
+      status:t.billingPaid?'paid':'pending',_fromTask:true
+    };
+    else{taskBilledByInvNo[key].taskIds.push(t.id);taskBilledByInvNo[key].amount+=parseFloat(t.billingAmount||0);taskBilledByInvNo[key].totalWithGst=taskBilledByInvNo[key].amount;}
+  });
+  // Also include tasks invoiced without an invoiceNo (single-task records)
+  allTasks.filter(t=>t.billingStatus==='invoiced'&&!t.invoiceNo&&!dbInvoices.find(i=>i.taskIds&&i.taskIds.includes(t.id))).forEach(t=>{
+    const key='notask-'+t.id;
+    taskBilledByInvNo[key]={
+      id:'task-inv-'+t.id,invoiceNo:'—',invoiceDate:t.billedDate||t.completedAt?.slice(0,10)||'',
+      clientId:c.id,taskIds:[t.id],amount:parseFloat(t.billingAmount||0),
+      applyGst:false,gstAmount:0,totalWithGst:parseFloat(t.billingAmount||0),
+      status:t.billingPaid?'paid':'pending',_fromTask:true,title:t.title
+    };
+  });
+  const invoices=[...dbInvoices,...Object.values(taskBilledByInvNo)];
   // Notifications for this client user
   const myNotifs=(window._cpNotifications||[]).filter(n=>n.userId===currentUser.id&&!n.read);
   const docCount=allTasks.reduce((n,t)=>{
@@ -5898,13 +5976,22 @@ function cpSettingsTab(){
   <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
     <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Colour Theme</label>
     <div style="display:flex;gap:8px">
-      ${['light','dark','system'].map(t=>`<button class="btn btn-xs ${(localStorage.getItem('theme')||'light')===t?'btn-primary':''}" onclick="setTheme('${t}');render()">` + (t==='light'?'☀ Light':t==='dark'?'🌙 Dark':'⚙ System') + `</button>`).join('')}
+      ${[['light','☀ Light'],['dark','🌙 Dark'],['system','⚙ System']].map(([th,lbl])=>`<button class="btn btn-xs ${(th==='dark'&&darkMode)||(th==='light'&&!darkMode)?'btn-primary':''}" onclick="cpSetTheme('${th}')">${lbl}</button>`).join('')}
     </div>
   </div>
   <div style="padding-top:14px;border-top:1px solid var(--border)">
     <button class="btn btn-danger btn-sm" onclick="doLogout()">Sign Out</button>
   </div>
   </div>`;
+}
+
+function cpSetTheme(th){
+  if(th==='dark') darkMode=true;
+  else if(th==='light') darkMode=false;
+  else darkMode=window.matchMedia('(prefers-color-scheme:dark)').matches;
+  LS.set('darkMode',darkMode);
+  document.documentElement.setAttribute('data-theme',darkMode?'dark':'light');
+  render();
 }
 
 async function cpSaveName(){
@@ -6102,22 +6189,24 @@ async function approveClientRequest(taskId){
   const userId=userEl?userEl.value:'';
   if(!deptId){toast('Please select a department first','warn');return;}
   if(!userId){toast('Please assign to a team member first','warn');return;}
-  const upd={
+  await fbUpd('tasks/'+taskId,{
     approvalStatus:'approved',
     status:'Pending',
-    department:deptId,
-    subDept:subId||null,
-    assignees:[userId],
-    'clientRequest.status':'approved',
-    'clientRequest.approvedBy':currentUser.id,
-    'clientRequest.approvedAt':today()
-  };
-  await fbUpd('tasks/'+taskId,upd);
+    deptId:deptId,
+    subDeptId:subId||null,
+    assignees:[userId]
+  });
+  await fbUpd('tasks/'+taskId+'/clientRequest',{
+    status:'approved',
+    approvedBy:currentUser.id,
+    approvedAt:today()
+  });
   // Notify the client user who made the request
   const req=t.clientRequest||{};
   if(req.requestedBy){
-    await fbSet('notifications/'+fbKey(),{
-      id:fbKey(),type:'task_approved',userId:req.requestedBy,
+    const nid1=fbKey();
+    await fbSet('notifications/'+nid1,{
+      id:nid1,type:'task_approved',userId:req.requestedBy,
       message:'Your task request "'+t.title+'" has been approved and assigned.',
       taskId:taskId,clientId:t.clientId,read:false,createdAt:new Date().toISOString()
     });
@@ -6130,15 +6219,16 @@ async function rejectClientRequest(taskId){
   const t=TASKS.find(x=>x.id===taskId);
   if(!t) return;
   const req=t.clientRequest||{};
-  await fbUpd('tasks/'+taskId,{
-    approvalStatus:'rejected',
-    'clientRequest.status':'rejected',
-    'clientRequest.rejectedBy':currentUser.id,
-    'clientRequest.rejectedAt':today()
+  await fbUpd('tasks/'+taskId,{approvalStatus:'rejected'});
+  await fbUpd('tasks/'+taskId+'/clientRequest',{
+    status:'rejected',
+    rejectedBy:currentUser.id,
+    rejectedAt:today()
   });
   if(req.requestedBy){
-    await fbSet('notifications/'+fbKey(),{
-      id:fbKey(),type:'task_rejected',userId:req.requestedBy,
+    const nid2=fbKey();
+    await fbSet('notifications/'+nid2,{
+      id:nid2,type:'task_rejected',userId:req.requestedBy,
       message:'Your task request "'+t.title+'" was not approved.',
       taskId:taskId,clientId:t.clientId,read:false,createdAt:new Date().toISOString()
     });
@@ -8120,14 +8210,20 @@ function render(){
   const _fs=LS.get('userFontSize',14);if(_fs!==14)applyFontSize(_fs);
   try {
     let _tb='',_sn='',_pg='',_mo='';
-    try{_tb=topBarHTML();}catch(e){console.error('topBarHTML threw:',e);_tb='<div style="background:red;color:#fff;padding:4px">topBar error: '+e.message+'</div>';}
-    try{_sn=sideNavHTML();}catch(e){console.error('sideNavHTML threw:',e.message,e.stack);_sn='<nav class="side-nav"></nav>';}
+    if(!isClientUser()){
+      try{_tb=topBarHTML();}catch(e){console.error('topBarHTML threw:',e);_tb='<div style="background:red;color:#fff;padding:4px">topBar error: '+e.message+'</div>';}
+      try{_sn=sideNavHTML();}catch(e){console.error('sideNavHTML threw:',e.message,e.stack);_sn='<nav class="side-nav"></nav>';}
+    }
     try{_pg=pageHTML();}catch(e){console.error('pageHTML threw:',e);_pg='<div style="padding:2rem;color:red">Page error: '+e.message+'</div>';}
     try{_mo=modalState?modalHTML():'';}catch(e){console.error('modalHTML threw:',e);_mo='<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;color:red;padding:2rem;border-radius:8px;z-index:999;max-width:80vw;word-break:break-all">Modal error: '+e.message+'</div>';modalState=null;}
     const _sp=searchPortalOpen?searchPortalHTML():'';
     const _bb=bulkMode&&selectedTasks.size>0?bulkBarHTML():'';
-    const _fab=currentUser&&curPage!=='settings'?'<div class="fab-wrap"><button class="fab-hint" onclick="openModal(\'newReminder\',{})">🔔 Add Reminder</button><button class="fab" id="fab-new-task" title="New Task (N)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>':'';
-    app.innerHTML=_tb+'<div class="app-shell'+(isClientUser()?' client-portal':'')+'">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(isClientUser()?' nav-collapsed':navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
+    const _fab=(!isClientUser())&&currentUser&&curPage!=='settings'?'<div class="fab-wrap"><button class="fab-hint" onclick="openModal(\'newReminder\',{})">🔔 Add Reminder</button><button class="fab" id="fab-new-task" title="New Task (N)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div>':'';
+    if(isClientUser()){
+      app.innerHTML=_pg+_mo;
+    } else {
+      app.innerHTML=_tb+'<div class="app-shell">'+_sn+(mobileNavOpen?'<div class="mobile-nav-overlay" onclick="mobileNavOpen=false;render()"></div>':'')+'<div class="main-area animate-in'+(navCollapsed?' nav-collapsed':'')+'">'+_pg+'</div></div>'+_bb+_fab+_sp+_mo;
+    }
     bindAll();
   } catch(e) {
     console.error('[TaskHub render error]', e);

@@ -2083,7 +2083,7 @@ function batchLogHTML({taskId}){
   const allTodayQty=todayLogs.reduce((a,l)=>a+(l.qty||0),0);
   const role=currentUser.role;
   const isAdminOrMgr=role==='superadmin'||role==='manager';
-  const staffList=isAdminOrMgr?USERS.filter(u=>role==='superadmin'||u.deptId===currentUser.deptId):[currentUser];
+  const staffList=isAdminOrMgr?USERS.filter(u=>u.role!=='client'&&(role==='superadmin'||u.deptId===currentUser.deptId)):[currentUser];
   return `${mHdr('Log: '+task.title)}
     <div style="background:var(--purple-bg);border:1px solid rgba(167,139,250,.2);border-radius:var(--r);padding:8px 12px;margin-bottom:14px;display:flex;gap:16px">
       <div style="text-align:center"><div style="font-size:20px;font-weight:700;color:var(--purple)">${myTodayQty}</div><div style="font-size:10px;color:var(--text3)">MY TODAY</div></div>
@@ -4664,7 +4664,7 @@ async function sendMorningDigest(ds){
   if(adminEmails.length)await sendEmailBCC(adminEmails,'[Company] Morning Task Summary - '+fmtDate(todayStr),body.join('\n'));
   // Auto-notify staff with no time entries yesterday
   var yesterday=new Date();yesterday.setDate(yesterday.getDate()-1);var yStr=yesterday.toISOString().slice(0,10);var yDay=yesterday.getDay();
-  if(yDay>=1&&yDay<=5){var noEntryYest=USERS.filter(function(u){if(!u.email||u.active===false||u.role==='superadmin')return false;return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});});noEntryYest.forEach(async function(u){await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),'Hi '+u.name+',\n\nWe noticed no time entries on '+fmtDate(yStr)+'. Please log your work in TaskHub.\n\nRegards,\n'+firm);});if(noEntryYest.length&&adminEmails.length)await sendEmailBCC(adminEmails,'[Attendance] No entries - '+fmtDate(yStr),noEntryYest.length+' staff had no entries:\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));}
+  if(yDay>=1&&yDay<=5){var noEntryYest=USERS.filter(function(u){if(!u.email||u.active===false||u.role==='superadmin'||u.role==='client')return false;return !TIME_ENTRIES.some(function(e){return e.userId===u.id&&e.date===yStr;});});noEntryYest.forEach(async function(u){await sendEmail(u.email,'Reminder: No time entries for '+fmtDate(yStr),'Hi '+u.name+',\n\nWe noticed no time entries on '+fmtDate(yStr)+'. Please log your work in TaskHub.\n\nRegards,\n'+firm);});if(noEntryYest.length&&adminEmails.length)await sendEmailBCC(adminEmails,'[Attendance] No entries - '+fmtDate(yStr),noEntryYest.length+' staff had no entries:\n'+noEntryYest.map(function(u){return '• '+u.name;}).join('\n'));}
 
 }
 
@@ -5394,7 +5394,7 @@ function weeklyTimesheetTab(){
   var days=[];for(var i=0;i<7;i++){var dd=new Date(mon);dd.setDate(mon.getDate()+i);days.push(dd.toISOString().slice(0,10));}
   var role=currentUser.role,isAdmin=role==='superadmin'||role==='manager';
   var staff=isAdmin
-    ?(role==='superadmin'?USERS.filter(function(u){return u.active!==false&&u.role!=='superadmin';}):USERS.filter(function(u){var d2=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return u.active!==false&&d2.some(function(id){return (currentUser.deptIds||[currentUser.deptId]).includes(id);});}))
+    ?(role==='superadmin'?USERS.filter(function(u){return u.active!==false&&u.role!=='superadmin'&&u.role!=='client';}):USERS.filter(function(u){var d2=Array.isArray(u.deptIds)&&u.deptIds.length?u.deptIds:(u.deptId?[u.deptId]:[]);return u.active!==false&&u.role!=='client'&&d2.some(function(id){return (currentUser.deptIds||[currentUser.deptId]).includes(id);});}))
     :[currentUser];
   var weekLabel=days[0]+' → '+days[6];
   var rows=staff.map(function(u){
@@ -6174,7 +6174,7 @@ function bulkEditTasksHTML(){
   if(!count) return mHdr('Bulk Edit')+'<p style="padding:12px">No tasks selected.</p>';
   const role=currentUser.role;
   const isAdmin=role==='superadmin'||role==='manager';
-  const visibleUsers=USERS.filter(u=>role==='superadmin'||u.deptId===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(u.deptId)));
+  const visibleUsers=USERS.filter(u=>u.role!=='client'&&(role==='superadmin'||u.deptId===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(u.deptId))));
   const depts=DEPTS.filter(d=>role==='superadmin'||d.id===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(d.id)));
   const allStatuses=Object.values(STATUSES).flat().filter((s,i,a)=>a.indexOf(s)===i);
   return `${mHdr('Bulk Edit '+count+' Task(s)')}
@@ -6265,7 +6265,7 @@ function quickTaskHTML(){
   const isAdmin=role==='superadmin'||role==='manager';
   const myDepts=Array.isArray(currentUser.deptIds)&&currentUser.deptIds.length?currentUser.deptIds:(currentUser.deptId?[currentUser.deptId]:[]);
   const availUsers=isAdmin
-    ? USERS.filter(u=>u.active!==false&&u.role!=='superadmin')
+    ? USERS.filter(u=>u.active!==false&&u.role!=='superadmin'&&u.role!=='client')
     : [currentUser];
   // Default dept: first dept of current user, or first Misc dept
   const miscDept=DEPTS.find(d=>/misc/i.test(d.name))||DEPTS.find(d=>myDepts.includes(d.id))||DEPTS[0];
@@ -8731,7 +8731,7 @@ function tasksPage(){
   <div class="filter-bar" style="flex-wrap:wrap;gap:6px;align-items:center;padding:8px 0">
     ${(()=>{
       const visibleDepts=DEPTS.filter(d=>role==='superadmin'||d.id===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(d.id)));
-      const visibleUsers=USERS.filter(u=>role==='superadmin'||u.deptId===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(u.deptId)));
+      const visibleUsers=USERS.filter(u=>u.role!=='client'&&(role==='superadmin'||u.deptId===currentUser.deptId||(Array.isArray(currentUser.deptIds)&&currentUser.deptIds.includes(u.deptId))));
       const visibleSDs=SUBDEPTS.filter(s=>visibleDepts.some(d=>d.id===s.deptId));
       const deptOpts=visibleDepts.map(d=>({value:d.id,label:d.name.split(' ')[0],color:d.color}));
       const sdOpts=visibleSDs.map(s=>({value:s.id,label:(DEPTS.find(d=>d.id===s.deptId)?.name.split(' ')[0]||'')+' — '+s.name}));
@@ -11878,7 +11878,7 @@ function taskDetailHTML(data){
         onclick="document.querySelectorAll('#asgn-list-${id} .edit-assignee-cb').forEach(function(cb){cb.checked=false;})">✕ Clear</button>
     </div>
     <div id="asgn-list-${id}" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r);padding:2px">
-      ${USERS.filter(u=>u.role!=='').map(u=>`<label style="display:flex;align-items:center;gap:7px;padding:5px 7px;cursor:pointer;border-radius:var(--r)">
+      ${USERS.filter(u=>u.role!==''&&u.role!=='client').map(u=>`<label style="display:flex;align-items:center;gap:7px;padding:5px 7px;cursor:pointer;border-radius:var(--r)">
         <input type="checkbox" class="edit-assignee-cb" value="${u.id}"${isAssignedTo(t,u.id)?' checked':''}/>
         <div class="avatar ${avClass(u.id)}" style="width:20px;height:20px;font-size:8px">${initials(u.name)}</div>
         <span style="font-size:12px">${u.name}</span>
@@ -12235,7 +12235,7 @@ function manualTimeHTML({taskId}){
   const role=currentUser.role;
   const isAdminOrMgr=role==='superadmin'||role==='manager';
   const staffList=isAdminOrMgr
-    ? USERS.filter(u=>role==='superadmin'||u.deptId===currentUser.deptId)
+    ? USERS.filter(u=>u.role!=='client'&&(role==='superadmin'||u.deptId===currentUser.deptId))
     : [currentUser];
   return`${mHdr('Add Manual Time')}
   <div class="form-row"><label class="form-label">Task *</label>
@@ -12580,10 +12580,11 @@ async function toggleClientUserActive(userId,active){
 }
 function settUsersHTML(){
   if(!window._userSearch) window._userSearch='';
+  const staffUsers=USERS.filter(u=>u.role!=='client');
   return`${mHdr('Users')}
-  <div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${USERS.length} users</div><button class="btn btn-primary btn-sm" onclick="openModal('newUser',{})">+ Add</button></div>
+  <div class="flex-between mb-12"><div style="font-size:13px;color:var(--text3)">${staffUsers.length} users</div><button class="btn btn-primary btn-sm" onclick="openModal('newUser',{})">+ Add</button></div>
   <div style="margin-bottom:10px"><input class="form-input" id="sett-users-search" placeholder="Search staff…" value="${window._userSearch||''}" onfocus="document.body.dataset.lastSearchFocus='sett-users-search'" oninput="window._userSearch=this.value;render()"/></div>
-  ${(window._userSearch?(USERS.filter(u=>(u.name||'').toLowerCase().includes(window._userSearch.toLowerCase())||(u.email||'').toLowerCase().includes(window._userSearch.toLowerCase()))):USERS).map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
+  ${(window._userSearch?(staffUsers.filter(u=>(u.name||'').toLowerCase().includes(window._userSearch.toLowerCase())||(u.email||'').toLowerCase().includes(window._userSearch.toLowerCase()))):staffUsers).map(u=>`<div class="list-item"><div class="avatar ${avClass(u.id)}" style="width:32px;height:32px;font-size:11px">${initials(u.name)}</div>
     <div style="flex:1"><div class="li-name">${u.name}</div><div class="li-sub">${u.role==='superadmin'?'Super Admin':u.role==='manager'?'Manager · '+getDept(u.deptId)?.name:'Staff · '+(getDept(u.deptId)?.name||'—')} · ${u.email||'no email'}</div></div>
     <button class="btn btn-ghost btn-xs" onclick="openModal('editUser',{id:'${u.id}'})">Edit</button>
   </div>`).join('')}`;

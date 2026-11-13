@@ -933,7 +933,17 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   });
   db.ref('r2_config').on('value',s=>{R2_CFG=s.val()||null;});
   db.ref('leaves').on('value',s=>{LEAVES=s.val()?Object.values(s.val()):[];render();});
-  db.ref('client_signup_requests').on('value',s=>{window._clientSignupRequests=s.val()?Object.values(s.val()):[];renderIfReady();});
+  // client_signup_requests listener removed — no signup flow
+  // Notifications listener (for client portal and admin bell)
+  db.ref('notifications').on('value',s=>{
+    window._cpNotifications=s.val()?Object.values(s.val()):[];
+    if(typeof renderIfReady==='function') renderIfReady();
+  });
+  // Invoices listener
+  db.ref('invoices').on('value',s=>{
+    window.INVOICES=s.val()?Object.values(s.val()):[];
+    if(typeof renderIfReady==='function') renderIfReady();
+  });
   db.ref('workflow_rules').on('value',function(s){
     var fromFirebase=s.val()?Object.values(s.val()):[];
     if(fromFirebase.length>0){
@@ -5151,52 +5161,108 @@ async function saveDscBulkEdit(){
 let _pendingInvoiceTaskIds=[];
 function billingInvoiceHTML(data){
   const taskIds=data?.taskIds||[];
-  _pendingInvoiceTaskIds=taskIds; // store globally — safe from attribute quoting
+  _pendingInvoiceTaskIds=taskIds;
   const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
   if(!tasks.length) return mHdr('Invoice')+'<p style="padding:12px">No tasks selected.</p>';
   const totalAmt=tasks.reduce((a,t)=>a+(t.billingAmount||0),0);
   const multiTask=tasks.length>1;
-  return `${mHdr((multiTask?'Merge & ':'')+'Invoice '+(multiTask?tasks.length+' Tasks':escHtml(tasks[0].title||'')))}
-  ${multiTask?`<div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:10px;max-height:140px;overflow-y:auto">`
-    +tasks.map(t=>`<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)">`
-      +`<span style="color:var(--accent);font-family:var(--mono)">${escHtml(t.status||'')}</span> `
-      +escHtml(t.title||'')+' '
-      +`<span style="color:var(--text3)">${escHtml(getClient(t.clientId)?.name||'')}</span></div>`).join('')
-    +'</div>':''}
-  <div class="g2" style="margin-bottom:10px">
+  const clientId=tasks[0]?.clientId||'';
+  const cl=getClient(clientId)||{};
+  const firm=FIRMS&&FIRMS[0]?FIRMS[0]:{};
+  const hasGstin=!!(firm.gstin);
+  return`${mHdr((multiTask?'Raise Invoice — '+tasks.length+' Tasks':'Raise Invoice'))}
+  <!-- Tasks covered -->
+  <div style="background:var(--bg3);border-radius:var(--r);padding:8px 12px;margin-bottom:12px;max-height:120px;overflow-y:auto">
+    <div style="font-size:10px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Tasks Covered</div>
+    ${tasks.map(t=>`<div style="font-size:11px;padding:2px 0;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
+      <span>${escHtml(t.title)}</span>
+      <span style="color:var(--text3)">${t.seconds?Math.round(t.seconds/36)/100+'h':''}</span>
+    </div>`).join('')}
+  </div>
+  <!-- Invoice details -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
     <div class="form-row"><label class="form-label">Invoice Number *</label>
-      <input class="form-input" id="inv-number" placeholder="e.g. INV-2025-001" autofocus/>
-    </div>
-    <div class="form-row"><label class="form-label">Invoice Date</label>
-      <input class="form-input" type="date" id="inv-date" value="${today()}"/>
-    </div>
+      <input class="form-input" id="inv-number" placeholder="INV-2025-001" autofocus/></div>
+    <div class="form-row"><label class="form-label">Invoice Date *</label>
+      <input class="form-input" type="date" id="inv-date" value="${today()}"/></div>
   </div>
-  <div class="form-row" style="margin-bottom:10px"><label class="form-label">Amount (₹)</label>
-    <input class="form-input" type="number" id="inv-amount" value="${totalAmt||''}" placeholder="Billing amount"/>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+    <div class="form-row"><label class="form-label">Due Date</label>
+      <input class="form-input" type="date" id="inv-duedate"/></div>
+    <div class="form-row"><label class="form-label">Client</label>
+      <input class="form-input" value="${escHtml(cl.name||'')}" disabled style="opacity:.7"/></div>
   </div>
-  ${multiTask?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px">⚠ These ${tasks.length} tasks will be merged under one invoice number.</div>`:''}
+  <div class="form-row" style="margin-bottom:10px"><label class="form-label">Amount (₹) *</label>
+    <input class="form-input" type="number" id="inv-amount" value="${totalAmt||''}" placeholder="Sub-total amount" oninput="billingInvoiceUpdateGST()"/></div>
+  ${hasGstin?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;background:var(--bg3);border-radius:var(--r)">
+    <input type="checkbox" id="inv-gst" onchange="billingInvoiceUpdateGST()" ${cl.gstin?'checked':''}/>
+    <label for="inv-gst" style="font-size:12px;cursor:pointer">Apply GST @ 18%${cl.gstin?' (Client GSTIN: '+escHtml(cl.gstin)+')':' (Client has no GSTIN — uncheck if not applicable)'}</label>
+  </div>
+  <div id="inv-gst-row" style="display:flex;justify-content:space-between;padding:4px 10px;font-size:12px;color:var(--text2)">
+    <span>GST @ 18%</span><span id="inv-gst-amt">₹0</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;padding:6px 10px;font-size:13px;font-weight:700;border-top:1px solid var(--border);margin-bottom:10px">
+    <span>Total</span><span id="inv-total-amt">₹${totalAmt.toLocaleString('en-IN')}</span>
+  </div>`:''}
+  <div class="form-row" style="margin-bottom:12px"><label class="form-label">Notes / Description</label>
+    <textarea class="form-input" id="inv-notes" rows="2" placeholder="Optional notes for the invoice…" style="resize:vertical"></textarea></div>
   <div style="display:flex;gap:8px">
-    <button class="btn btn-primary" style="flex:1" onclick="saveBillingInvoice()">✓ ${multiTask?'Merge & ':''}Mark as Invoiced</button>
+    <button class="btn btn-primary" style="flex:1" onclick="saveBillingInvoice()">✓ Raise Invoice</button>
     <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
   </div>`;
+}
+
+function billingInvoiceUpdateGST(){
+  const amt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;
+  const applyGst=document.getElementById('inv-gst')?.checked||false;
+  const gst=applyGst?Math.round(amt*0.18*100)/100:0;
+  const total=amt+gst;
+  const gstEl=document.getElementById('inv-gst-amt');
+  const totEl=document.getElementById('inv-total-amt');
+  if(gstEl) gstEl.textContent='₹'+gst.toLocaleString('en-IN');
+  if(totEl) totEl.textContent='₹'+total.toLocaleString('en-IN');
 }
 
 async function saveBillingInvoice(){
   const taskIds=_pendingInvoiceTaskIds||[];
   const invNo=(document.getElementById('inv-number')?.value||'').trim();
   const invDate=document.getElementById('inv-date')?.value||today();
+  const invDueDate=document.getElementById('inv-duedate')?.value||'';
   const invAmt=parseFloat(document.getElementById('inv-amount')?.value||'0')||0;
+  const applyGst=document.getElementById('inv-gst')?.checked||false;
+  const notes=(document.getElementById('inv-notes')?.value||'').trim();
   if(!invNo){toast('Invoice number is required');return;}
+  if(!invAmt){toast('Amount is required');return;}
   const tasks=taskIds.map(id=>TASKS.find(t=>t.id===id)).filter(Boolean);
-  // If merging multiple tasks: store invoice group reference on each
-  const mergeId=taskIds.length>1?uid():null;
-  for(const t of tasks){
-    const upd={billingStatus:'invoiced',invoiceNo:invNo,invoiceDate:invDate,billingAmount:invAmt};
-    if(mergeId) upd.mergeGroupId=mergeId;
-    await fbUpd('tasks/'+t.id,upd);
-  }
-  closeModal();
-  toast('✓ '+tasks.length+' task(s) invoiced as '+invNo);
+  if(!tasks.length){toast('No tasks selected');return;}
+  const clientId=tasks[0]?.clientId||'';
+  const gstAmt=applyGst?Math.round(invAmt*0.18*100)/100:0;
+  const totalWithGst=invAmt+gstAmt;
+  // Create invoice record
+  const invoiceId=uid();
+  const invoice={
+    id:invoiceId,invoiceNo:invNo,invoiceDate:invDate,dueDate:invDueDate||null,
+    clientId,taskIds,amount:invAmt,applyGst,gstAmount:gstAmt,totalWithGst,
+    notes:notes||null,status:'pending',
+    createdBy:currentUser.id,createdAt:today()
+  };
+  try{
+    await db.ref('invoices/'+invoiceId).set(invoice);
+    // Update all tasks to invoiced status
+    for(const t of tasks){
+      await fbUpd('tasks/'+t.id,{billingStatus:'invoiced',invoiceNo:invNo,invoiceDate:invDate,invoiceId});
+    }
+    // Notify client users linked to this client
+    const clientUsers=USERS.filter(u=>u.role==='client'&&u.clientId===clientId&&u.active!==false);
+    for(const cu of clientUsers){
+      const nid=uid();
+      await db.ref('notifications/'+nid).set({id:nid,type:'invoice_raised',userId:cu.id,
+        message:'New invoice raised: '+invNo+' — ₹'+totalWithGst.toLocaleString('en-IN'),
+        invoiceId,clientId,read:false,createdAt:new Date().toISOString()}).catch(function(){});
+    }
+    closeModal();
+    toast('✓ Invoice '+invNo+' raised — ₹'+totalWithGst.toLocaleString('en-IN')+(applyGst?' (incl. GST)':''));
+  }catch(e){toast('Error: '+e.message);}
 }
 
 
@@ -5460,202 +5526,168 @@ function leaveApplyHTML(){
 
 
 // ─── Client Portal ────────────────────────────────────────────────────────
-function isClientUser(){ return currentUser.role==='client'; }
+function isClientUser(){ return currentUser&&currentUser.role==='client'; }
 
+// ─── Client Portal ─────────────────────────────────────────────────────────
 function clientPortalPage(){
   const c=CLIENTS.find(cl=>cl.id===currentUser.clientId);
-  if(!c) return '<div style="padding:2rem;color:var(--red)">No client linked to your account. Contact admin.</div>';
+  if(!c) return `<div style="padding:2rem;text-align:center">
+    <div style="font-size:40px;margin-bottom:12px">🔗</div>
+    <div style="font-size:15px;font-weight:600;margin-bottom:6px">No client linked to your account</div>
+    <div style="font-size:13px;color:var(--text3)">Please contact your administrator.</div>
+  </div>`;
   if(!window._cpTab) window._cpTab='tasks';
   const tab=window._cpTab;
   const allTasks=TASKS.filter(t=>t.clientId===c.id);
   const activeTasks=allTasks.filter(t=>!isTaskTerminal(t));
   const doneTasks=allTasks.filter(t=>isTaskTerminal(t));
-  // Count docs across all tasks
+  const myReqs=allTasks.filter(t=>t.clientRequest&&t.clientRequest.requestedBy===currentUser.id);
+  const invoices=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id);
+  // Notifications for this client user
+  const myNotifs=(window._cpNotifications||[]).filter(n=>n.userId===currentUser.id&&!n.read);
   const docCount=allTasks.reduce((n,t)=>{
     const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
     return n+atts.length;
   },0);
-  // Invoices
-  const invoices=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id);
 
   const tabs=[
-    {id:'tasks',label:'📋 Tasks',count:activeTasks.length},
-    {id:'newreq',label:'➕ New Request'},
-    {id:'docs',label:'📁 Documents',count:docCount||null},
-    {id:'invoices',label:'🧾 Invoices',count:invoices.length||null},
-    {id:'cpsettings',label:'⚙ Settings'},
+    {id:'tasks',label:'My Tasks',icon:'📋',count:activeTasks.length},
+    {id:'requests',label:'Requests',icon:'➕',count:myReqs.filter(t=>t.clientRequest?.status==='pending').length||null},
+    {id:'invoices',label:'Invoices',icon:'🧾',count:invoices.length||null},
+    {id:'cpsettings',label:'Settings',icon:'⚙',count:null},
   ];
 
-  return`<div style="max-width:720px;margin:0 auto;font-size:15px">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-    <div>
-      <div style="font-size:20px;font-weight:700;line-height:1.2">${currentUser.name}</div>
-      <div style="font-size:13px;color:var(--text3);margin-top:3px">🏢 ${c.name}</div>
-      <div style="font-size:11px;color:var(--text3);margin-top:1px">Client Portal</div>
+  const firm=FIRMS&&FIRMS[0]?FIRMS[0]:{name:'R B Shah & Associates'};
+
+  return`<div style="min-height:100vh;background:var(--bg);font-size:14px">
+  <!-- Header -->
+  <div style="background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;position:sticky;top:0;z-index:10">
+    <div style="display:flex;align-items:center;gap:10px">
+      ${FIRMS&&FIRMS[0]&&FIRMS[0].logo?`<img src="${FIRMS[0].logo}" style="height:32px;object-fit:contain;border-radius:4px"/>`:'<div style="width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff">RB</div>'}
+      <div>
+        <div style="font-size:13px;font-weight:700;line-height:1.1">${escHtml(firm.name||'R B Shah & Associates')}</div>
+        <div style="font-size:11px;color:var(--text3)">Client Portal</div>
+      </div>
     </div>
-    <button class="btn btn-danger btn-sm" onclick="doLogout()">Logout</button>
+    <div style="display:flex;align-items:center;gap:8px">
+      ${myNotifs.length?`<button onclick="window._cpTab='notifications';render()" style="background:var(--red);color:#fff;border:none;border-radius:9px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer">🔔 ${myNotifs.length}</button>`:''}
+      <div style="text-align:right">
+        <div style="font-size:12px;font-weight:600">${escHtml(currentUser.name)}</div>
+        <div style="font-size:10px;color:var(--text3)">${escHtml(c.name)}</div>
+      </div>
+      <button class="btn btn-ghost btn-xs" onclick="doLogout()" style="font-size:11px">Sign out</button>
+    </div>
   </div>
 
-  <div style="display:flex;gap:4px;border-bottom:2px solid var(--border);margin-bottom:16px;overflow-x:auto">
+  <!-- Tab bar -->
+  <div style="background:var(--bg2);border-bottom:1px solid var(--border);display:flex;overflow-x:auto;padding:0 8px">
     ${tabs.map(t=>`<button onclick="window._cpTab='${t.id}';render()"
-      style="padding:7px 14px;font-size:12px;font-weight:600;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid ${tab===t.id?'var(--accent)':'transparent'};margin-bottom:-2px;color:${tab===t.id?'var(--accent)':'var(--text2)'};transition:color .15s">
-      ${t.label}${t.count!=null?`<span style="font-size:10px;background:var(--accent);color:#fff;border-radius:9px;padding:0 5px;margin-left:4px">${t.count}</span>`:''}
+      style="padding:10px 14px;font-size:12px;font-weight:600;border:none;background:none;cursor:pointer;white-space:nowrap;border-bottom:2px solid ${tab===t.id?'var(--accent)':'transparent'};margin-bottom:-1px;color:${tab===t.id?'var(--accent)':'var(--text2)'};display:flex;align-items:center;gap:4px">
+      ${t.icon} ${t.label}${t.count?`<span style="font-size:10px;background:var(--accent);color:#fff;border-radius:9px;padding:0 5px;min-width:16px;text-align:center">${t.count}</span>`:''}
     </button>`).join('')}
   </div>
 
-  ${tab==='tasks'?cpTasksTab(activeTasks,doneTasks):''}
-  ${tab==='newreq'?cpNewRequestTab(c):''}
-  ${tab==='docs'?cpDocsTab(allTasks):''}
-  ${tab==='invoices'?cpInvoicesTab(invoices):''}
-  ${tab==='cpsettings'?cpSettingsTab():''}
-  </div>`;
-}
-
-
-function cpSettingsTab(){
-  const u=currentUser;
-  const fs=LS.get('userFontSize',14);
-  const theme=LS.get('theme','light');
-  return`<div class="card" style="max-width:480px;margin:0 auto">
-  <div style="font-size:15px;font-weight:700;margin-bottom:16px">My Settings</div>
-  <div style="margin-bottom:14px">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Display Name</label>
-    <div style="display:flex;gap:8px">
-      <input id="cp-sett-name" class="form-input" value="${u.name||''}" style="flex:1;font-size:14px"/>
-      <button class="btn btn-sm" onclick="cpSaveName()">Save</button>
-    </div>
-  </div>
-  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Change Password</label>
-    <input id="cp-sett-pw1" class="form-input mb-6" type="password" placeholder="New password (min 6 chars)" style="font-size:14px"/>
-    <input id="cp-sett-pw2" class="form-input" type="password" placeholder="Confirm new password" style="font-size:14px"/>
-    <button class="btn btn-sm mt-8" onclick="cpChangePassword()">Update Password</button>
-  </div>
-  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Font Size</label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${[12,13,14,15,16,17,18].map(s=>`<button class="btn btn-xs ${fs===s?'btn-primary':''}" onclick="applyFontSize(${s});LS.set('userFontSize',${s});render()">${s}px</button>`).join('')}
-    </div>
-  </div>
-  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Colour Theme</label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-xs ${theme==='light'?'btn-primary':''}" onclick="setTheme('light');render()">☀ Light</button>
-      <button class="btn btn-xs ${theme==='dark'?'btn-primary':''}" onclick="setTheme('dark');render()">🌙 Dark</button>
-      <button class="btn btn-xs ${theme==='system'?'btn-primary':''}" onclick="setTheme('system');render()">⚙ System</button>
-    </div>
-  </div>
-  <div style="padding-top:14px;border-top:1px solid var(--border)">
-    <button class="btn btn-danger btn-sm" onclick="doLogout()">Sign Out</button>
+  <!-- Content -->
+  <div style="max-width:720px;margin:0 auto;padding:14px 12px">
+    ${tab==='tasks'?cpTasksTab(activeTasks,doneTasks,c):''}
+    ${tab==='requests'?cpRequestsTab(myReqs,c):''}
+    ${tab==='invoices'?cpInvoicesTab(invoices,c):''}
+    ${tab==='cpsettings'?cpSettingsTab():''}
+    ${tab==='notifications'?cpNotificationsTab():''}
   </div>
   </div>`;
 }
-async function cpSaveName(){
-  const name=(document.getElementById('cp-sett-name')?.value||'').trim();
-  if(!name){toast('Name cannot be empty');return;}
-  try{
-    await fbUpd('users/'+currentUser.id,{name});
-    currentUser.name=name;
-    const cached=LS.get('currentUser',{});
-    LS.set('currentUser',{...cached,name});
-    toast('✓ Name updated');
-    render();
-  }catch(e){toast('Error: '+e.message);}
-}
-async function cpChangePassword(){
-  const p1=(document.getElementById('cp-sett-pw1')?.value||'');
-  const p2=(document.getElementById('cp-sett-pw2')?.value||'');
-  if(!p1||p1.length<6){toast('Password must be at least 6 characters');return;}
-  if(p1!==p2){toast('Passwords do not match');return;}
-  try{
-    const user=auth.currentUser;
-    if(!user){toast('Not signed in');return;}
-    await user.updatePassword(p1);
-    // Keep client_activations in sync so admin reset works
-    var _ek=btoa(currentUser.email).replace(/[^a-zA-Z0-9]/g,'_');
-    db.ref('client_activations/'+_ek).update({currentPass:btoa(p1),tempPass:p1}).catch(function(){});
-    toast('\u2713 Password updated successfully');
-    render();
-  }catch(e){
-    if(e.code==='auth/requires-recent-login'){toast('Session expired. Please log out and log in again, then change your password.');return;}
-    toast('Error: '+e.message);
-  }
-}
-function cpTasksTab(activeTasks,doneTasks){
+
+function cpTasksTab(activeTasks,doneTasks,c){
+  if(!activeTasks.length&&!doneTasks.length) return`<div style="text-align:center;padding:48px 20px">
+    <div style="font-size:40px;margin-bottom:12px">📋</div>
+    <div style="font-size:14px;font-weight:600;margin-bottom:4px">No tasks yet</div>
+    <div style="font-size:12px;color:var(--text3)">Use the ➕ Requests tab to submit a new work request.</div>
+  </div>`;
+
   return`<div>
-  ${activeTasks.length===0?'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No active tasks right now. Use ➕ New Request to submit one.</div>':''}
-  ${activeTasks.map(t=>{
-    const assignees=taskAssignees(t);
-    const pct=t.checklistItems&&t.checklistItems.length?Math.round(t.checklistItems.filter(x=>x.done).length/t.checklistItems.length*100):null;
-    return`<div class="card mb-10" style="border-left:3px solid ${statusColor(t.status)}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">${getDept(t.deptId)?.name||''}${t.dueDate?' · Due '+fmtDate(t.dueDate):''}</div>
-        </div>
-        <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0">${t.status}</span>
-      </div>
-      ${assignees.length?`<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-        <span style="font-size:10px;color:var(--text3)">Assigned to:</span>
-        <div style="display:flex;gap:3px;flex-wrap:wrap">
-          ${assignees.map(a=>`<span style="font-size:11px;background:var(--bg3);border-radius:10px;padding:1px 7px">${a.name}</span>`).join('')}
-        </div>
-      </div>`:''}
-      ${pct!=null?`<div style="margin-bottom:8px"><div style="height:4px;background:var(--border);border-radius:2px"><div style="height:4px;background:var(--accent);border-radius:2px;width:${pct}%"></div></div><div style="font-size:10px;color:var(--text3);margin-top:2px">${pct}% complete</div></div>`:''}
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${t.id}'})">📎 Docs &amp; Comments</button>
-      </div>
-    </div>`;
-  }).join('')}
-  ${doneTasks.length?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--text3);padding:4px 0">▸ ${doneTasks.length} completed task${doneTasks.length!==1?'s':''}</summary>
-    <div style="margin-top:8px">
-    ${doneTasks.map(t=>{
-      const tInv=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id&&(inv.taskId===t.id||(Array.isArray(inv.taskIds)&&inv.taskIds.includes(t.id))));
-      const tInvAmt=tInv.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
-      const closeDate=t.completedAt||t.updatedAt||t.dueDate||'';
-      return`<div class="card mb-6" style="opacity:.85;border-left:3px solid ${statusColor(t.status)}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">${getDept(t.deptId)?.name||''}${closeDate?' · Closed '+fmtDate(closeDate):''}</div>
-          </div>
-          <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0;font-size:10px">${t.status}</span>
-        </div>
-        ${tInvAmt>0?`<div style="margin-top:6px;font-size:12px;color:var(--text2)">🧾 Invoiced: <strong>\u20b9${tInvAmt.toLocaleString('en-IN')}</strong>${tInv.some(i=>i.status==='paid')?'<span style="margin-left:6px;font-size:10px;background:#dcfce7;color:#16a34a;border-radius:4px;padding:1px 5px">Paid</span>':'<span style="margin-left:6px;font-size:10px;background:#fef9c3;color:#ca8a04;border-radius:4px;padding:1px 5px">Pending</span>'}</div>`:''}
-      </div>`;
-    }).join('')}
-    </div>
-  </details>`:''}
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <div style="font-size:15px;font-weight:700">Active Tasks <span style="font-size:12px;color:var(--text3);font-weight:400">(${activeTasks.length})</span></div>
+    <button class="btn btn-primary btn-sm" onclick="window._cpTab='requests';render()">+ New Request</button>
+  </div>
+  ${activeTasks.length===0?'<div style="text-align:center;color:var(--text3);padding:24px;font-size:13px;border:1px dashed var(--border);border-radius:var(--r2)">No active tasks right now.</div>':''}
+  ${activeTasks.map(t=>cpTaskCard(t,false,c)).join('')}
+  ${doneTasks.length?`
+  <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
+    <details>
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text2);list-style:none;display:flex;align-items:center;gap:6px;user-select:none">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        Completed Tasks (${doneTasks.length})
+      </summary>
+      <div style="margin-top:10px">${doneTasks.map(t=>cpTaskCard(t,true,c)).join('')}</div>
+    </details>
+  </div>`:''}
   </div>`;
 }
 
-function cpNewRequestTab(c){
-  return`<div class="card">
-  <div style="font-size:14px;font-weight:600;margin-bottom:12px">Submit New Request</div>
-  <div style="margin-bottom:10px">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Task / Work Description <span style="color:var(--red)">*</span></label>
-    <input id="cpnr-title" class="form-input" placeholder="e.g. File GST return for Oct 2026" style="font-size:13px"/>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-    <div>
-      <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Required by Date</label>
-      <input id="cpnr-due" class="form-input" type="date" style="font-size:13px"/>
+function cpTaskCard(t,done,c){
+  const assignees=taskAssignees(t);
+  const pct=t.checklistItems&&t.checklistItems.length?Math.round(t.checklistItems.filter(x=>x.done).length/t.checklistItems.length*100):null;
+  const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
+  const tInvs=(window.INVOICES||[]).filter(inv=>inv.clientId===c.id&&(inv.taskIds&&inv.taskIds.includes(t.id)));
+  const tInvAmt=tInvs.reduce((s,inv)=>s+(parseFloat(inv.totalWithGst||inv.total||inv.amount||0)),0);
+  return`<div class="card mb-10" style="border-left:3px solid ${statusColor(t.status)};${done?'opacity:.8':''}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.title)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${getDept(t.deptId)?.name||''}${t.dueDate?' · Due '+fmtDate(t.dueDate):''}</div>
+      </div>
+      <span class="badge" style="background:${statusColor(t.status)}22;color:${statusColor(t.status)};white-space:nowrap;flex-shrink:0;font-size:11px">${t.status}</span>
     </div>
-    <div>
-      <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Priority</label>
-      <select id="cpnr-priority" class="form-select" style="font-size:13px">
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-        <option value="low">Low</option>
-        <option value="urgent">Urgent</option>
-      </select>
+    ${assignees.length?`<div style="display:flex;align-items:center;gap:5px;margin-bottom:7px;flex-wrap:wrap">
+      <span style="font-size:10px;color:var(--text3)">Handled by:</span>
+      ${assignees.map(a=>`<span style="font-size:11px;background:var(--bg3);border-radius:10px;padding:2px 8px">${escHtml(a.name)}</span>`).join('')}
+    </div>`:''}
+    ${pct!=null?`<div style="margin-bottom:7px"><div style="height:3px;background:var(--border);border-radius:2px"><div style="height:3px;background:var(--accent);border-radius:2px;width:${pct}%"></div></div><div style="font-size:10px;color:var(--text3);margin-top:1px">${pct}% complete</div></div>`:''}
+    ${tInvAmt>0?`<div style="margin-bottom:7px;font-size:11px">🧾 Invoiced: <strong>₹${tInvAmt.toLocaleString('en-IN')}</strong></div>`:''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-ghost btn-xs" onclick="openModal('cpTaskDetail',{id:'${t.id}'})">📎 Docs &amp; Comments ${atts.length?`(${atts.length})`:''}</button>
     </div>
+  </div>`;
+}
+
+function cpRequestsTab(myReqs,c){
+  const pending=myReqs.filter(t=>t.clientRequest?.status==='pending'||t.approvalStatus==='pending');
+  const others=myReqs.filter(t=>t.clientRequest?.status!=='pending'&&t.approvalStatus!=='pending');
+  return`<div>
+  <div class="card mb-12">
+    <div style="font-size:14px;font-weight:700;margin-bottom:12px">New Work Request</div>
+    <div class="form-row"><label class="form-label">Description <span style="color:var(--red)">*</span></label>
+      <input id="cpnr-title" class="form-input" placeholder="e.g. File GST return for Oct 2026"/></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div><label class="form-label">Required by Date</label>
+        <input id="cpnr-due" class="form-input" type="date"/></div>
+      <div><label class="form-label">Priority</label>
+        <select id="cpnr-priority" class="form-select">
+          <option value="medium">Medium</option><option value="high">High</option>
+          <option value="low">Low</option><option value="urgent">Urgent</option>
+        </select></div>
+    </div>
+    <div class="form-row"><label class="form-label">Additional Notes</label>
+      <textarea id="cpnr-notes" class="form-input" rows="2" placeholder="Any details or context…" style="resize:vertical"></textarea></div>
+    <button class="btn btn-primary w-full" onclick="cpSubmitNewRequest('${c.id}')">Submit Request</button>
   </div>
-  <div style="margin-bottom:14px">
-    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Additional Notes</label>
-    <textarea id="cpnr-notes" class="form-input" rows="3" placeholder="Any additional details or requirements…" style="font-size:12px;resize:vertical"></textarea>
-  </div>
-  <button class="btn btn-primary w-full" onclick="cpSubmitNewRequest('${c.id}')">Submit Request</button>
+  ${pending.length?`<div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Pending Review (${pending.length})</div>
+  ${pending.map(t=>`<div class="card mb-8" style="border-left:3px solid var(--amber)">
+    <div style="font-size:12px;font-weight:600">${escHtml(t.title)}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:3px">${t.dueDate?'Requested by '+fmtDate(t.dueDate):'No date specified'}${t.priority?' · '+t.priority:''}</div>
+    <span style="font-size:10px;background:var(--amber-bg);color:var(--amber);border-radius:4px;padding:2px 6px;margin-top:4px;display:inline-block">⏳ Awaiting admin review</span>
+  </div>`).join('')}`:''}
+  ${others.length?`<div style="font-size:12px;font-weight:700;color:var(--text2);margin:12px 0 8px;text-transform:uppercase;letter-spacing:.5px">Previous Requests</div>
+  ${others.map(t=>{
+    const st=t.clientRequest?.status||t.approvalStatus||'unknown';
+    const col=st==='approved'?'var(--green,#4ade80)':st==='rejected'?'var(--red)':'var(--text3)';
+    return`<div class="card mb-8">
+      <div style="font-size:12px;font-weight:600">${escHtml(t.title)}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">${t.dueDate?fmtDate(t.dueDate):''}</div>
+      <span style="font-size:10px;color:${col};background:${col}22;border-radius:4px;padding:2px 6px;margin-top:4px;display:inline-block">${st}</span>
+    </div>`;
+  }).join('')}`:''}
   </div>`;
 }
 
@@ -5665,117 +5697,288 @@ async function cpSubmitNewRequest(clientId){
   const priority=document.getElementById('cpnr-priority')?.value||'medium';
   const notes=(document.getElementById('cpnr-notes')?.value||'').trim();
   if(!title){toast('Please enter a task description');return;}
-  const adminUsers=USERS.filter(u=>u.role==='superadmin'||u.role==='admin');
-  const adminIds=adminUsers.map(u=>u.id);
+  const taskId=uid();
   const task={
-    id:uid(),title,clientId,
-    status:'Pending',priority,
-    dueDate,description:notes,
+    id:taskId,title,clientId,priority,dueDate,
+    description:notes,status:'Pending',
     createdAt:today(),createdByClientId:currentUser.id,
-    assignedTo:adminIds,deptId:''
+    approvalStatus:'pending',
+    clientRequest:{requestedBy:currentUser.id,requestedByName:currentUser.name,requestedAt:today(),status:'pending'}
   };
   try{
-    await db.ref('tasks/'+task.id).set(task);
-    toast('✓ Request submitted');
-    window._cpTab='tasks';
+    await db.ref('tasks/'+taskId).set(task);
+    // Notify all admins
+    const admins=USERS.filter(u=>u.role==='superadmin'||u.role==='admin');
+    for(const admin of admins){
+      const nid=uid();
+      await db.ref('notifications/'+nid).set({id:nid,type:'client_request',userId:admin.id,
+        message:currentUser.name+' submitted a new work request: '+title,
+        taskId,clientId,read:false,createdAt:new Date().toISOString()}).catch(function(){});
+    }
+    toast('✓ Request submitted — admin will assign and confirm');
+    document.getElementById('cpnr-title') && (document.getElementById('cpnr-title').value='');
+    document.getElementById('cpnr-notes') && (document.getElementById('cpnr-notes').value='');
     render();
   }catch(e){toast('Error submitting: '+e.message);}
 }
 
-function cpDocsTab(allTasks){
-  const rows=[];
-  allTasks.forEach(t=>{
-    const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
-    atts.forEach(a=>rows.push({task:t,att:a}));
-  });
-  return`<div>
-  ${rows.length===0?'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No documents yet. Open a task to upload documents.</div>':''}
-  ${rows.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-    <div style="font-size:20px">📄</div>
-    <div style="flex:1;min-width:0">
-      <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.att.name||r.att.key}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:1px">${r.task.title}</div>
-    </div>
-    <div style="display:flex;gap:5px;flex-shrink:0">
-      ${R2_CFG?`<a href="${R2_CFG.workerUrl}/download?key=${encodeURIComponent(r.att.key)}" target="_blank" class="btn btn-ghost btn-xs">⬇ Download</a>`:''}
-      <button class="btn btn-ghost btn-xs" onclick="openModal('clientTaskDetail',{id:'${r.task.id}'})">View task</button>
-    </div>
-  </div>`).join('')}
-  </div>`;
-}
+function cpInvoicesTab(invoices,c){
+  // Date filter
+  if(!window._cpInvFilter) window._cpInvFilter={from:'',to:''};
+  let filtered=invoices;
+  if(window._cpInvFilter.from) filtered=filtered.filter(i=>(i.invoiceDate||i.date||'')>=window._cpInvFilter.from);
+  if(window._cpInvFilter.to) filtered=filtered.filter(i=>(i.invoiceDate||i.date||'')<=window._cpInvFilter.to);
+  filtered=filtered.slice().sort((a,b)=>((b.invoiceDate||b.date||'')).localeCompare((a.invoiceDate||a.date||'')));
+  const total=filtered.reduce((s,inv)=>s+(parseFloat(inv.totalWithGst||inv.total||inv.amount||0)),0);
+  const paid=filtered.filter(i=>i.status==='paid');
+  const paidAmt=paid.reduce((s,i)=>s+(parseFloat(i.totalWithGst||i.total||i.amount||0)),0);
+  const outstanding=total-paidAmt;
 
-function cpInvoicesTab(invoices){
-  if(!invoices.length) return'<div style="text-align:center;color:var(--text3);padding:40px 20px;font-size:13px">No invoices raised yet.</div>';
-  const total=invoices.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
-  const unpaid=invoices.filter(inv=>inv.status!=='paid'&&inv.status!=='cancelled');
-  const unpaidAmt=unpaid.reduce((s,inv)=>s+(parseFloat(inv.amount||inv.total||0)),0);
   return`<div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
-    <div class="stat-card"><div class="sc-label">Total Invoiced</div><div class="sc-val" style="font-size:16px">₹${total.toLocaleString('en-IN')}</div></div>
-    <div class="stat-card"><div class="sc-label">Outstanding</div><div class="sc-val" style="font-size:16px;color:${unpaidAmt>0?'var(--amber)':'var(--green,#4ade80)'}">₹${unpaidAmt.toLocaleString('en-IN')}</div></div>
+  <!-- Summary cards -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+    <div class="stat-card"><div class="sc-label">Total Billed</div><div class="sc-val" style="font-size:15px">₹${total.toLocaleString('en-IN')}</div></div>
+    <div class="stat-card"><div class="sc-label">Received</div><div class="sc-val" style="font-size:15px;color:var(--green,#4ade80)">₹${paidAmt.toLocaleString('en-IN')}</div></div>
+    <div class="stat-card"><div class="sc-label">Outstanding</div><div class="sc-val" style="font-size:15px;color:${outstanding>0?'var(--amber)':'var(--text)'}">₹${outstanding.toLocaleString('en-IN')}</div></div>
   </div>
-  ${invoices.sort((a,b)=>(b.date||b.createdAt||'').localeCompare(a.date||a.createdAt||'')).map(inv=>{
-    const amt=parseFloat(inv.amount||inv.total||0);
-    const paid=inv.status==='paid';
-    const cancelled=inv.status==='cancelled';
-    return`<div class="card mb-8" style="border-left:3px solid ${paid?'var(--green,#4ade80)':cancelled?'var(--text3)':'var(--amber)'}">
+  <!-- Date filter -->
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3)">Filter:</span>
+    <input class="form-input" type="date" style="width:140px;font-size:12px" value="${window._cpInvFilter.from||''}" onchange="window._cpInvFilter.from=this.value;render()" placeholder="From"/>
+    <input class="form-input" type="date" style="width:140px;font-size:12px" value="${window._cpInvFilter.to||''}" onchange="window._cpInvFilter.to=this.value;render()" placeholder="To"/>
+    ${(window._cpInvFilter.from||window._cpInvFilter.to)?`<button class="btn btn-ghost btn-xs" onclick="window._cpInvFilter={from:'',to:''};render()">✕ Clear</button>`:''}
+    <button class="btn btn-ghost btn-xs" onclick="cpDownloadLedger('${c.id}')">⬇ Download Ledger</button>
+  </div>
+  ${filtered.length===0?'<div style="text-align:center;color:var(--text3);padding:40px;font-size:13px;border:1px dashed var(--border);border-radius:var(--r2)">No invoices found.</div>':''}
+  ${filtered.map(inv=>{
+    const amt=parseFloat(inv.totalWithGst||inv.total||inv.amount||0);
+    const st=inv.status||'pending';
+    const stCol=st==='paid'?'var(--green,#4ade80)':st==='cancelled'?'var(--text3)':'var(--amber)';
+    const tasks=(inv.taskIds||[]).map(tid=>TASKS.find(t=>t.id===tid)).filter(Boolean);
+    return`<div class="card mb-8">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-        <div>
-          <div style="font-size:12px;font-weight:700">${inv.invoiceNo||inv.id}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">${inv.description||''}</div>
-          <div style="font-size:10px;color:var(--text3);margin-top:1px">${fmtDate(inv.date||inv.createdAt)||''}</div>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700">${escHtml(inv.invoiceNo||inv.id)}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${fmtDate(inv.invoiceDate||inv.date)||'—'}${inv.dueDate?' · Due '+fmtDate(inv.dueDate):''}</div>
+          ${tasks.length?`<div style="font-size:11px;color:var(--text2);margin-top:4px">${tasks.map(t=>escHtml(t.title)).join(', ')}</div>`:''}
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div style="font-size:14px;font-weight:700">₹${amt.toLocaleString('en-IN')}</div>
-          <span style="font-size:10px;padding:2px 7px;border-radius:9px;background:${paid?'var(--green-bg)':cancelled?'var(--bg3)':'var(--amber-bg)'};color:${paid?'var(--green,#4ade80)':cancelled?'var(--text3)':'var(--amber)'}">${inv.status||'pending'}</span>
+          <div style="font-size:15px;font-weight:700">₹${amt.toLocaleString('en-IN')}</div>
+          <span style="font-size:10px;padding:2px 7px;border-radius:9px;background:${stCol}22;color:${stCol}">${st}</span>
         </div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px">
+        <button class="btn btn-ghost btn-xs" onclick="openModal('cpViewInvoice',{invoiceId:'${inv.id}'})">View Invoice</button>
       </div>
     </div>`;
   }).join('')}
   </div>`;
 }
 
-function clientTaskDetailHTML(data){
+function cpDownloadLedger(clientId){
+  const c2=CLIENTS.find(cl=>cl.id===clientId);
+  const invs=(window.INVOICES||[]).filter(i=>i.clientId===clientId)
+    .sort((a,b)=>((a.invoiceDate||a.date||'')).localeCompare((b.invoiceDate||b.date||'')));
+  if(!invs.length){toast('No invoices to download');return;}
+  const lines=['Invoice No,Date,Due Date,Tasks,Amount,GST,Total,Status'];
+  invs.forEach(inv=>{
+    const tasks=(inv.taskIds||[]).map(tid=>TASKS.find(t=>t.id===tid)?.title||tid).join(' | ');
+    lines.push([
+      inv.invoiceNo||inv.id,
+      inv.invoiceDate||inv.date||'',
+      inv.dueDate||'',
+      '"'+tasks+'"',
+      inv.amount||0,
+      inv.gstAmount||0,
+      inv.totalWithGst||inv.amount||0,
+      inv.status||'pending'
+    ].join(','));
+  });
+  const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=(c2?c2.name.replace(/\s+/g,'_'):'Client')+'_Ledger.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  toast('✓ Ledger downloaded');
+}
+
+function cpViewInvoiceHTML(data){
+  const inv=(window.INVOICES||[]).find(i=>i.id===data?.invoiceId);
+  if(!inv) return mHdr('Invoice')+'<div style="padding:1rem;color:var(--red)">Invoice not found.</div>';
+  const cl=CLIENTS.find(c=>c.id===inv.clientId)||{};
+  const tasks=(inv.taskIds||[]).map(tid=>TASKS.find(t=>t.id===tid)).filter(Boolean);
+  const firm=FIRMS&&FIRMS[0]?FIRMS[0]:{name:'R B Shah & Associates'};
+  const amount=parseFloat(inv.amount||0);
+  const gstAmt=parseFloat(inv.gstAmount||0);
+  const total=parseFloat(inv.totalWithGst||inv.total||amount);
+  return`${mHdr('Invoice')}
+  <div style="background:#fff;color:#111;border-radius:var(--r);padding:16px;font-size:12px;line-height:1.5">
+    <div style="border-bottom:2px solid #1a1a2e;padding-bottom:10px;margin-bottom:10px">
+      <div style="font-size:15px;font-weight:800;color:#1a1a2e">${escHtml(firm.name||'R B Shah & Associates')}</div>
+      ${firm.address?`<div style="color:#555;font-size:11px">${escHtml(firm.address)}</div>`:''}
+      ${firm.gstin?`<div style="font-size:11px">GSTIN: ${escHtml(firm.gstin)}</div>`:''}
+      ${firm.pan?`<div style="font-size:11px">PAN: ${escHtml(firm.pan)}</div>`:''}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">
+      <div>
+        <div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:.5px">Invoice To</div>
+        <div style="font-weight:700;margin-top:2px">${escHtml(cl.name||'')}</div>
+        ${cl.address?`<div style="color:#555">${escHtml(cl.address)}</div>`:''}
+        ${cl.gstin?`<div>GSTIN: ${escHtml(cl.gstin)}</div>`:''}
+        ${cl.pan?`<div>PAN: ${escHtml(cl.pan)}</div>`:''}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:14px;font-weight:800;color:#1a1a2e">${escHtml(inv.invoiceNo||inv.id)}</div>
+        <div style="color:#555;margin-top:2px">Date: <strong>${fmtDate(inv.invoiceDate||inv.date)||'—'}</strong></div>
+        ${inv.dueDate?`<div style="color:#555">Due: <strong>${fmtDate(inv.dueDate)}</strong></div>`:''}
+        <div style="margin-top:4px"><span style="font-size:10px;padding:2px 7px;border-radius:4px;background:${inv.status==='paid'?'#dcfce7':'#fef9c3'};color:${inv.status==='paid'?'#16a34a':'#92400e'}">${inv.status||'pending'}</span></div>
+      </div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:10px;font-size:11px">
+      <thead><tr style="background:#f8f8f8;border-bottom:1px solid #ddd">
+        <th style="padding:5px 8px;text-align:left;font-weight:700">Description</th>
+        <th style="padding:5px 8px;text-align:right;font-weight:700">Hours</th>
+        <th style="padding:5px 8px;text-align:right;font-weight:700">Amount</th>
+      </tr></thead>
+      <tbody>
+        ${tasks.map(t=>{const h=t.seconds?Math.round(t.seconds/36)/100:null;
+          return`<tr style="border-bottom:1px solid #eee">
+            <td style="padding:5px 8px">${escHtml(t.title)}<br><span style="color:#888;font-size:10px">${getDept(t.deptId)?.name||''}</span></td>
+            <td style="padding:5px 8px;text-align:right">${h!=null?h+'h':'—'}</td>
+            <td style="padding:5px 8px;text-align:right">—</td>
+          </tr>`;}).join('')}
+        ${inv.description&&!tasks.length?`<tr><td colspan="3" style="padding:5px 8px">${escHtml(inv.description)}</td></tr>`:''}
+      </tbody>
+    </table>
+    <div style="margin-left:auto;max-width:220px;font-size:12px">
+      <div style="display:flex;justify-content:space-between;padding:3px 0"><span>Sub Total</span><span>₹${amount.toLocaleString('en-IN')}</span></div>
+      ${(firm.gstin&&inv.applyGst)?`<div style="display:flex;justify-content:space-between;padding:3px 0;color:#555"><span>GST @ 18%</span><span>₹${gstAmt.toLocaleString('en-IN')}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;padding:5px 0;border-top:2px solid #1a1a2e;font-size:14px;font-weight:800"><span>Total</span><span>₹${total.toLocaleString('en-IN')}</span></div>
+    </div>
+    ${inv.notes?`<div style="margin-top:12px;padding:8px;background:#f8f8f8;border-radius:4px;font-size:11px;color:#555"><strong>Notes:</strong> ${escHtml(inv.notes)}</div>`:''}
+  </div>
+  <button class="btn btn-primary w-full mt-10" onclick="window.print()">🖨 Print / Save as PDF</button>`;
+}
+
+function cpNotificationsTab(){
+  const all=(window._cpNotifications||[]).filter(n=>n.userId===currentUser.id)
+    .sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  // Mark all as read
+  all.filter(n=>!n.read).forEach(n=>{
+    n.read=true;
+    db.ref('notifications/'+n.id).update({read:true}).catch(function(){});
+  });
+  if(!all.length) return`<div style="text-align:center;padding:48px 20px;color:var(--text3);font-size:13px">No notifications yet.</div>`;
+  return`<div>
+    <div style="font-size:15px;font-weight:700;margin-bottom:12px">Notifications</div>
+    ${all.map(n=>`<div style="padding:10px 12px;background:${n.read?'var(--bg2)':'var(--blue-bg)'};border:1px solid ${n.read?'var(--border)':'rgba(74,158,255,.2)'};border-radius:var(--r);margin-bottom:8px">
+      <div style="font-size:12px;${n.read?'':'font-weight:600'}">${escHtml(n.message||n.type||'Notification')}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px">${n.createdAt?fmtDate(n.createdAt.slice(0,10)):''}</div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function cpSettingsTab(){
+  const u=currentUser;
+  const c2=CLIENTS.find(cl=>cl.id===u.clientId);
+  return`<div class="card" style="max-width:480px;margin:0 auto">
+  <div style="font-size:15px;font-weight:700;margin-bottom:16px">My Settings</div>
+  <div style="padding:10px 12px;background:var(--bg3);border-radius:var(--r);margin-bottom:16px;font-size:12px">
+    <div style="color:var(--text3)">Logged in as</div>
+    <div style="font-weight:600;margin-top:2px">${escHtml(u.name)}</div>
+    <div style="color:var(--text3);margin-top:1px">${escHtml(u.email||'')}</div>
+    ${c2?`<div style="color:var(--text3);margin-top:1px">🏢 ${escHtml(c2.name)}</div>`:''}
+  </div>
+  <div style="margin-bottom:16px">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Change Password</label>
+    <input id="cp-sett-pw1" class="form-input mb-6" type="password" placeholder="New password (min 6 chars)"/>
+    <input id="cp-sett-pw2" class="form-input" type="password" placeholder="Confirm new password"/>
+    <button class="btn btn-primary btn-sm mt-8" onclick="cpChangePassword()">Update Password</button>
+  </div>
+  <div style="margin-bottom:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <label style="font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:8px">Colour Theme</label>
+    <div style="display:flex;gap:8px">
+      ${['light','dark','system'].map(t=>`<button class="btn btn-xs ${(localStorage.getItem('theme')||'light')===t?'btn-primary':''}" onclick="setTheme('${t}');render()">` + (t==='light'?'☀ Light':t==='dark'?'🌙 Dark':'⚙ System') + `</button>`).join('')}
+    </div>
+  </div>
+  <div style="padding-top:14px;border-top:1px solid var(--border)">
+    <button class="btn btn-danger btn-sm" onclick="doLogout()">Sign Out</button>
+  </div>
+  </div>`;
+}
+
+async function cpSaveName(){
+  const name=(document.getElementById('cp-sett-name')?.value||'').trim();
+  if(!name){toast('Name cannot be empty');return;}
+  try{
+    await fbUpd('users/'+currentUser.id,{name});
+    currentUser.name=name;
+    const cached=LS.get('currentUser',{});
+    LS.set('currentUser',{...cached,name});
+    toast('✓ Name updated');render();
+  }catch(e){toast('Error: '+e.message);}
+}
+
+// cpTaskDetail modal — docs + comments for client
+function cpTaskDetailHTML(data){
   const t=TASKS.find(x=>x.id===data?.id);
-  if(!t)return mHdr('Task')+'<p style="padding:12px">Not found.</p>';
+  if(!t) return mHdr('Task')+'<p style="padding:12px">Not found.</p>';
   const atts=window._taskAttachments&&window._taskAttachments[t.id]?Object.values(window._taskAttachments[t.id]):[];
   const assignees=taskAssignees(t);
   const comments=(t.comments||[]).slice().sort((a,b)=>(a.at||'').localeCompare(b.at||''));
-  return`${mHdr(t.title)}
+  return`${mHdr(escHtml(t.title))}
   <div style="background:var(--bg3);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
       <div><span style="color:var(--text3)">Status</span><div style="font-weight:600;color:${statusColor(t.status)}">${t.status}</div></div>
       <div><span style="color:var(--text3)">Due Date</span><div style="font-weight:600">${fmtDate(t.dueDate)||'Not set'}</div></div>
       <div><span style="color:var(--text3)">Department</span><div>${getDept(t.deptId)?.name||'—'}</div></div>
-      <div><span style="color:var(--text3)">Priority</span><div>${t.priority||'—'}</div></div>
+      <div><span style="color:var(--text3)">Priority</span><div style="text-transform:capitalize">${t.priority||'—'}</div></div>
     </div>
-    ${assignees.length?`<div style="margin-top:6px;font-size:11px"><span style="color:var(--text3)">Assigned to: </span>${assignees.map(a=>a.name).join(', ')}</div>`:''}
+    ${assignees.length?`<div style="margin-top:6px;font-size:11px"><span style="color:var(--text3)">Handled by: </span>${assignees.map(a=>escHtml(a.name)).join(', ')}</div>`:''}
   </div>
-  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📎 Documents</div>
-  ${atts.length?atts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
-    <span>📄</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.name||a.key}</span>
+  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">📎 Documents (${atts.length})</div>
+  ${atts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
+    <span>📄</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(a.name||a.key)}</span>
     ${R2_CFG?`<a href="${R2_CFG.workerUrl}/download?key=${encodeURIComponent(a.key)}" target="_blank" class="btn btn-ghost btn-xs">⬇</a>`:''}
-  </div>`).join(''):'<div style="font-size:11px;color:var(--text3);margin-bottom:4px">No documents yet</div>'}
-  <div style="margin-top:8px;margin-bottom:16px">
-    <label class="btn btn-ghost btn-sm" style="cursor:pointer">📎 Upload Document<input type="file" style="display:none" onchange="uploadAttachment('${t.id}',this.files[0])"/></label>
+  </div>`).join('')}
+  <div style="margin:8px 0 16px">
+    <label class="btn btn-ghost btn-sm" style="cursor:pointer">📎 Upload Document<input type="file" style="display:none" onchange="cpUploadDoc('${t.id}',this.files[0])"/></label>
   </div>
-  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">💬 Comments</div>
-  <div id="ctd-comments" style="margin-bottom:10px">
+  <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">💬 Comments (${comments.length})</div>
+  <div id="ctd-comments" style="margin-bottom:10px;max-height:220px;overflow-y:auto">
   ${comments.length===0?'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">No comments yet</div>':''}
   ${comments.map(cm=>{
     const isMe=cm.authorId===currentUser.id||cm.author===currentUser.name;
     return`<div style="margin-bottom:8px;display:flex;flex-direction:column;align-items:${isMe?'flex-end':'flex-start'}">
       <div style="max-width:85%;background:${isMe?'var(--blue-bg)':'var(--bg3)'};border-radius:10px;padding:7px 10px">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:3px">${cm.author||'Unknown'}${cm.at?' · '+fmtDate(cm.at):''}</div>
-        <div style="font-size:12px;white-space:pre-wrap">${cm.text||''}</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:3px">${escHtml(cm.author||'Unknown')}${cm.at?' · '+fmtDate(cm.at):''}</div>
+        <div style="font-size:12px;white-space:pre-wrap">${escHtml(cm.text||'')}</div>
       </div>
     </div>`;
   }).join('')}
   </div>
   <div style="display:flex;gap:6px">
-    <input id="ctd-comment-input" class="form-input" placeholder="Add a comment…" style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addClientComment('${t.id}');}"/>
+    <input id="ctd-comment-input" class="form-input" placeholder="Add a comment…" style="flex:1;font-size:12px"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addClientComment('${t.id}');}"/>
     <button class="btn btn-primary btn-sm" onclick="addClientComment('${t.id}')">Send</button>
   </div>`;
+}
+
+async function cpUploadDoc(taskId,file){
+  if(!file){toast('No file selected');return;}
+  toast('Uploading…');
+  try{
+    await uploadAttachment(taskId,file);
+    // Notify admins
+    const admins=USERS.filter(u=>u.role==='superadmin'||u.role==='admin');
+    for(const admin of admins){
+      const nid=uid();
+      const t=TASKS.find(x=>x.id===taskId);
+      await db.ref('notifications/'+nid).set({id:nid,type:'client_doc_upload',userId:admin.id,
+        message:currentUser.name+' uploaded a document to: '+(t?t.title:'task'),
+        taskId,read:false,createdAt:new Date().toISOString()}).catch(function(){});
+    }
+  }catch(e){toast('Upload error: '+e.message);}
 }
 
 async function addClientComment(taskId){
@@ -5787,103 +5990,16 @@ async function addClientComment(taskId){
     const t=TASKS.find(x=>x.id===taskId);
     const existing=Array.isArray(t?.comments)?t.comments:[];
     await fbUpd('tasks/'+taskId,{comments:[...existing,comment]});
-    if(inp)inp.value='';
+    if(inp) inp.value='';
     toast('✓ Comment added');
     render();
   }catch(e){toast('Error: '+e.message);}
 }
 
 
-function showClientSignup(){
-  const d=document.querySelector('.login-card')||document.getElementById('login-box')||document.getElementById('login-panel');
-  if(!d) return;
-  d.innerHTML=`<div style="padding:24px">
-    <div style="font-size:18px;font-weight:700;margin-bottom:4px">Client Portal Access</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Sign up to view your tasks. Your request will be sent to admin for approval.</div>
-    <div class="form-row"><label class="form-label">Your Name</label><input class="form-input" id="cs-name" placeholder="Full name"/></div>
-    <div class="form-row"><label class="form-label">Email</label><input class="form-input" type="email" id="cs-email" placeholder="your@email.com"/></div>
-    <div class="form-row"><label class="form-label">Company Name</label><input class="form-input" id="cs-company" placeholder="Your company"/></div>
-    <div class="form-row"><label class="form-label">Mobile</label><input class="form-input" type="tel" id="cs-mobile" placeholder="10-digit number"/></div>
-    <div id="cs-err" style="color:var(--red);font-size:12px;margin-bottom:8px"></div>
-    <button class="btn btn-primary w-full" onclick="submitClientSignup()">Request Access</button>
-    <button class="btn btn-ghost w-full" style="margin-top:6px" onclick="renderLogin()">← Back to Login</button>
-  </div>`;
-}
-async function submitClientSignup(){
-  const name=(document.getElementById('cs-name')?.value||'').trim();
-  const email=(document.getElementById('cs-email')?.value||'').trim().toLowerCase();
-  const company=(document.getElementById('cs-company')?.value||'').trim();
-  const mobile=(document.getElementById('cs-mobile')?.value||'').trim();
-  const err=document.getElementById('cs-err');
-  if(!name||!email){if(err)err.textContent='Name and email are required';return;}
-  if(!/^[^@]+@[^@]+\.[^@]+$/.test(email)){if(err)err.textContent='Please enter a valid email address';return;}
-  // Check for duplicate: existing approved user or pending request with same email
-  const dupReq=(window._clientSignupRequests||[]).find(r=>r.email&&r.email.toLowerCase()===email&&r.status==='pending');
-  if(dupReq){if(err)err.textContent='A signup request for this email is already pending.';return;}
-  // Check via public client_activations (email already has an account)
-  try{
-    var ck=btoa(email).replace(/[^a-zA-Z0-9]/g,'_');
-    var eSnap=await db.ref('client_activations/'+ck).once('value').catch(function(){return null;});
-    if(eSnap&&eSnap.val()){if(err)err.textContent='An account for this email already exists. Please log in.';return;}
-  }catch(_){}
-  const reqId=uid();
-  try{
-    await db.ref('client_signup_requests/'+reqId).set({id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
-  }catch(e){
-    if(!window._clientSignupRequests) window._clientSignupRequests=[];
-    window._clientSignupRequests.push({id:reqId,name,email,company,mobile,status:'pending',requestedAt:today()});
-  }
-  alert('Your request has been submitted! Admin will review and grant access.');
-  renderLogin();
-}
 
 
-function doApproveSignup(btn){var rid=btn.dataset.rid;var sel=document.getElementById(btn.dataset.sid);approveClientSignup(rid,sel?sel.value:'');}
-function doRejectSignup(btn){rejectClientSignup(btn.dataset.rid);}
-async function approveClientSignup(reqId, selectedClientId){
-  const req=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
-  if(!req) return;
-  // Check for duplicate email in USERS
-  var dupUser=USERS.find(function(u){return u.email&&u.email.toLowerCase()===(req.email||'').toLowerCase();});
-  if(dupUser){toast('⚠ A user with email '+req.email+' already exists ('+dupUser.name+'). Cannot create duplicate.');return;}
-  var clientId=selectedClientId||'';
-  // If no existing client selected, create a new one
-  if(!clientId){
-    var newClientId=uid();
-    var newClient={id:newClientId,name:req.company||req.name,email:req.email,mobile:req.mobile||'',phones:(req.mobile?[req.mobile]:[]),createdAt:today(),createdByUserId:currentUser.id};
-    try{await db.ref('clients/'+newClientId).set(newClient);}catch(e){CLIENTS.push(newClient);}
-    clientId=newClientId;
-    toast('Created new client: '+(req.company||req.name));
-  }
-  const linkedClient=CLIENTS.find(function(c){return c.id===clientId;})||{name:req.company||req.name};
-  const tempPass='Client@'+Math.random().toString(36).slice(2,8);
-  const userId=uid();
-  const userRecord={id:userId,name:req.name,email:req.email,mobile:req.mobile||'',
-    role:'client',active:true,clientId:clientId,
-    pendingPasswordReset:tempPass,createdAt:today()};
-  try{
-    await db.ref('users/'+userId).set(userRecord);
-    await db.ref('client_signup_requests/'+reqId).update({status:'approved',approvedBy:currentUser.id,approvedAt:today(),userId,linkedClientId:clientId});
-    // Write public activation record so client can bootstrap Firebase Auth on first login
-    var emailKey=btoa(req.email).replace(/[^a-zA-Z0-9]/g,'_');
-    await db.ref('client_activations/'+emailKey).set({userId,tempPass,email:req.email,createdAt:today()}).catch(function(){});
-  }catch(e){
-    const r2=(window._clientSignupRequests||[]).find(function(r){return r.id===reqId;});
-    if(r2){r2.status='approved';r2.userId=userId;}
-  }
-  toast('✓ Account created for '+req.name+' → linked to '+linkedClient.name+'. Temp password: '+tempPass);
-  render();
-}
-async function rejectClientSignup(reqId){
-  try{
-    await db.ref('client_signup_requests/'+reqId).update({status:'rejected',rejectedBy:currentUser.id,rejectedAt:today()});
-  }catch(e){
-    const req=(window._clientSignupRequests||[]).find(r=>r.id===reqId);
-    if(req) req.status='rejected';
-  }
-  toast('Client signup request rejected');
-  render();
-}
+
 
 
 // ─── Task Date Extension Requests ────────────────────────────────────────
@@ -5974,6 +6090,62 @@ async function rejectDateExtension(taskId){
   render();
 }
 
+
+async function approveClientRequest(taskId){
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t) return;
+  const deptEl=document.getElementById('creq-dept-'+taskId);
+  const subEl=document.getElementById('creq-sub-'+taskId);
+  const userEl=document.getElementById('creq-user-'+taskId);
+  const deptId=deptEl?deptEl.value:'';
+  const subId=subEl?subEl.value:'';
+  const userId=userEl?userEl.value:'';
+  if(!deptId){toast('Please select a department first','warn');return;}
+  if(!userId){toast('Please assign to a team member first','warn');return;}
+  const upd={
+    approvalStatus:'approved',
+    status:'Pending',
+    department:deptId,
+    subDept:subId||null,
+    assignees:[userId],
+    'clientRequest.status':'approved',
+    'clientRequest.approvedBy':currentUser.id,
+    'clientRequest.approvedAt':today()
+  };
+  await fbUpd('tasks/'+taskId,upd);
+  // Notify the client user who made the request
+  const req=t.clientRequest||{};
+  if(req.requestedBy){
+    await fbSet('notifications/'+fbKey(),{
+      id:fbKey(),type:'task_approved',userId:req.requestedBy,
+      message:'Your task request "'+t.title+'" has been approved and assigned.',
+      taskId:taskId,clientId:t.clientId,read:false,createdAt:new Date().toISOString()
+    });
+  }
+  toast('✓ Client request approved and task assigned');
+  render();
+}
+
+async function rejectClientRequest(taskId){
+  const t=TASKS.find(x=>x.id===taskId);
+  if(!t) return;
+  const req=t.clientRequest||{};
+  await fbUpd('tasks/'+taskId,{
+    approvalStatus:'rejected',
+    'clientRequest.status':'rejected',
+    'clientRequest.rejectedBy':currentUser.id,
+    'clientRequest.rejectedAt':today()
+  });
+  if(req.requestedBy){
+    await fbSet('notifications/'+fbKey(),{
+      id:fbKey(),type:'task_rejected',userId:req.requestedBy,
+      message:'Your task request "'+t.title+'" was not approved.',
+      taskId:taskId,clientId:t.clientId,read:false,createdAt:new Date().toISOString()
+    });
+  }
+  toast('Task request rejected');
+  render();
+}
 
 function selectAllVisibleTasks(){
   const ids=window._filteredTaskIds||[];
@@ -8013,12 +8185,7 @@ function loginPageHTML(){
       <div style="text-align:center;margin-top:14px">
         <button onclick="showForgotPassword()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline">Forgot password?</button>
       </div>
-      <div onclick="showClientSignup()" style="margin-top:18px;border:2px dashed var(--border);border-radius:var(--r2);padding:14px 16px;cursor:pointer;text-align:center;transition:.15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-        <div style="font-size:22px;margin-bottom:4px">🏢</div>
-        <div style="font-size:13px;font-weight:600;color:var(--text)">Client Portal Access</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:3px">View your tasks &amp; documents online</div>
-        <div style="font-size:11px;color:var(--accent);margin-top:6px;font-weight:600">Sign up for free access →</div>
-      </div>
+
     </div>
   </div>`;
 }function bindLoginHandlers(){
@@ -8204,7 +8371,7 @@ function switchUser(){doLogout();}
 function topBarHTML(){
   const u=currentUser,runSec=activeTimer?liveSec(activeTimer):0;
   const searchRes=searchQuery.length>1?doSearch(searchQuery):[];
-  const pendingSignups=(currentUser.role==='superadmin'||currentUser.role==='admin'||currentUser.role==='manager')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
+  const pendingSignups=0;
   const pendingApprovals=(currentUser.role!=='employee')?TASKS.filter(t=>t.approvalStatus==='pending'&&(currentUser.role==='superadmin'||t.deptId===currentUser.deptId)).length:0;
   const activeFirm=getActiveFirm();
   return`<div class="top-bar">
@@ -8528,7 +8695,7 @@ function tasksPage(){
   if(taskFilter.due==='nodue')tasks=tasks.filter(t=>!t.dueDate&&!isTaskTerminal(t));
   if(taskFilter.search&&taskFilter.search.trim()){const sq=taskFilter.search.toLowerCase().trim();tasks=tasks.filter(t=>(t.title||'').toLowerCase().includes(sq)||(getClient(t.clientId)?.name||'').toLowerCase().includes(sq)||(t.notes||'').toLowerCase().includes(sq)||(getDept(t.deptId)?.name||'').toLowerCase().includes(sq)||(getSD(t.subDeptId)?.name||'').toLowerCase().includes(sq)||taskAssignees(t).some(u=>(u.name||'').toLowerCase().includes(sq)));}
   const pendingAppr=myTasks().filter(t=>t.approvalStatus==='pending');
-  const pendingSignups=(currentUser.role==='superadmin'||currentUser.role==='admin'||currentUser.role==='manager')?(window._clientSignupRequests||[]).filter(r=>r.status==='pending').length:0;
+  const pendingSignups=0;
   const udinNeeded=myTasks().filter(t=>requiresUDIN(t)&&isTaskTerminal(t)&&!hasValidUDIN(t));
   const certTasks=myTasks().filter(t=>t.isCertificate);
   const hasFilter=!!(taskFilter.search||taskFilter.depts.length||taskFilter.subdepts?.length||taskFilter.clients.length||taskFilter.priorities.length||taskFilter.statuses.length||taskFilter.assignees.length||(taskFilter.due&&taskFilter.due!=='all')||taskFilter.exactDate);
@@ -8616,38 +8783,40 @@ function tasksPage(){
     const tabMap=[(showClosedBilled?pubTasks:pubTasks.filter(t=>!isTaskTerminal(t))),pubTasks.filter(t=>!isTaskTerminal(t)&&t.status!=='Not Started'),pendingAppr,udinNeeded,certTasks,pubTasks.filter(t=>isTaskTerminal(t)&&showClosedBilled),rejectedT,privateT];
     // Approval tab uses custom card
     if(curTab===2&&(role==='superadmin'||role==='manager'))return`<div class="page-title mb-8">Approvals <span style="font-size:12px;color:var(--text3);font-weight:400">${pendingAppr.length} pending</span></div>${(()=>{
-        const signupReqs=(window._clientSignupRequests||[]).filter(function(r){return r.status==='pending';});
-        if(!signupReqs.length) return '';
-        return '<div style="background:rgba(126,217,87,.08);border:1px solid rgba(126,217,87,.3);border-radius:var(--r2);padding:12px;margin-bottom:14px">'
-          +'<div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px">👤 Client Portal Sign-Up Requests ('+signupReqs.length+')</div>'
-          +signupReqs.map(function(r){
-            var co=(r.company||'').toLowerCase();
-            var sorted=CLIENTS.slice().sort(function(a,b){
-              var an=(a.name||'').toLowerCase(),bn=(b.name||'').toLowerCase();
-              var as=an===co?2:an.includes(co)||co.includes(an)?1:0;
-              var bs=bn===co?2:bn.includes(co)||co.includes(bn)?1:0;
-              return bs-as;
-            });
-            var selectId='csr-link-'+r.id;
+        // Client task requests (pending approval)
+        const clientReqs=myTasks().filter(function(t){return t.approvalStatus==='pending'&&t.clientRequest&&t.clientRequest.status==='pending';});
+        if(!clientReqs.length) return '';
+        return '<div style="background:rgba(74,158,255,.08);border:1px solid rgba(74,158,255,.3);border-radius:var(--r2);padding:12px;margin-bottom:14px">'
+          +'<div style="font-size:13px;font-weight:700;color:var(--blue);margin-bottom:10px">📨 Client Task Requests ('+clientReqs.length+')</div>'
+          +clientReqs.map(function(t){
+            const cl=getClient(t.clientId);
+            const req=t.clientRequest||{};
+            const depts=DEPTS||[];
+            const subDepts=SUBDEPTS||[];
+            const reqId='creq-'+t.id;
             return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:10px">'
-              +'<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
-              +'<div style="flex:1"><div style="font-size:12px;font-weight:700">'+r.name+'</div>'
-              +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'+r.email+(r.mobile?' · '+r.mobile:'')+'</div>'
-              +(r.company?'<div style="font-size:11px;color:var(--amber);margin-top:2px">Company entered: <b>'+r.company+'</b></div>':'')
-              +'</div></div>'
-              +'<div style="margin-bottom:8px">'
-              +'<label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Link to client in your records:</label>'
-              +'<select id="'+selectId+'" class="form-select" style="font-size:12px">'
-              +'<option value="">— Create new client ('+(r.company||r.name)+') —</option>'
-              +sorted.map(function(c){
-                var co2=(r.company||'').toLowerCase(),cn=(c.name||'').toLowerCase();
-                var isMatch=cn===co2||cn.includes(co2)||co2.includes(cn);
-                return '<option value="'+c.id+'"'+(isMatch?' selected':'')+'>'+c.name+(c.gstin?' ('+c.gstin+')':'')+(isMatch?' ✓ best match':'')+'</option>';
-              }).join('')
-              +'</select></div>'
-              +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
-              +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80)" data-rid="'+r.id+'" data-sid="'+selectId+'" onclick="doApproveSignup(this)">✓ Approve &amp; Link</button>'
-              +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" data-rid="'+r.id+'" onclick="doRejectSignup(this)">✗ Reject</button>'
+              +'<div style="font-size:12px;font-weight:700">'+escHtml(t.title)+'</div>'
+              +'<div style="font-size:11px;color:var(--text3);margin-top:2px">'
+              +(cl?'🏢 '+escHtml(cl.name)+' · ':'')
+              +(req.requestedByName?'By '+escHtml(req.requestedByName)+' · ':'')
+              +(t.dueDate?'Due '+fmtDate(t.dueDate)+' · ':'')
+              +escHtml(t.priority||'medium')+'</div>'
+              +(t.description?'<div style="font-size:11px;color:var(--text2);margin-top:4px;padding:4px 6px;background:var(--bg3);border-radius:4px">'+escHtml(t.description)+'</div>':'')
+              +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+              +'<select id="creq-dept-'+t.id+'" class="form-select" style="font-size:11px;width:auto">'
+              +'<option value="">— Dept —</option>'
+              +depts.map(function(d){return'<option value="'+d.id+'">'+escHtml(d.name)+'</option>';}).join('')
+              +'</select>'
+              +'<select id="creq-sub-'+t.id+'" class="form-select" style="font-size:11px;width:auto">'
+              +'<option value="">— Sub-dept —</option>'
+              +subDepts.map(function(sd){return'<option value="'+sd.id+'">'+escHtml(sd.name)+'</option>';}).join('')
+              +'</select>'
+              +'<select id="creq-user-'+t.id+'" class="form-select" style="font-size:11px;width:auto">'
+              +'<option value="">— Assign to —</option>'
+              +USERS.filter(function(u){return u.role!=="client"&&u.active!==false;}).map(function(u){return'<option value="'+u.id+'">'+escHtml(u.name)+'</option>';}).join('')
+              +'</select>'
+              +'<button class="btn btn-sm" style="background:var(--green-bg);color:var(--green,#4ade80)" onclick="approveClientRequest(\''+t.id+'\')">✓ Approve &amp; Assign</button>'
+              +'<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rejectClientRequest(\''+t.id+'\')">✗ Reject</button>'
               +'</div></div>';
           }).join('')
           +'</div>';
@@ -11003,7 +11172,7 @@ function settingsPage(){
   ${isSA?`
   <div class="section-label">Administration</div>
   <div class="sett-item" onclick="openModal('settUsers',{})"><div class="sett-icon" style="background:var(--blue-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Users</div><div style="font-size:11px;color:var(--text3)">${USERS.length} users</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
-  <div class="sett-item" onclick="openModal('settClientUsers',{})"><div class="sett-icon" style="background:var(--green-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green,#4ade80)" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Client Portal Users</div><div style="font-size:11px;color:var(--text3)">${USERS.filter(u=>u.role==='client').length} client account${USERS.filter(u=>u.role==='client').length!==1?'s':''} · reset password, deactivate</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+  <div class="sett-item" onclick="openModal('settClientUsers',{})"><div class="sett-icon" style="background:var(--green-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green,#4ade80)" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Client Portal Users</div><div style="font-size:11px;color:var(--text3)">${USERS.filter(u=>u.role==='client').length} client account${USERS.filter(u=>u.role==='client').length!==1?'s':''} · create, manage, set password</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settAdminConfig',{})"><div class="sett-icon" style="background:var(--red-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Admin Settings</div><div style="font-size:11px;color:var(--text3)">Leave balances · Time alert threshold</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settFirms',{})"><div class="sett-icon" style="background:var(--gold-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" stroke-linecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Firm Masters</div><div style="font-size:11px;color:var(--text3)">${FIRMS.length} firm${FIRMS.length!==1?'s':''} · logo, GSTIN, letterhead</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
   <div class="sett-item" onclick="openModal('settDepts',{})"><div class="sett-icon" style="background:var(--amber-bg)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Departments & Sub-Depts</div><div style="font-size:11px;color:var(--text3)">${DEPTS.length} depts · ${SUBDEPTS.length} sub-depts</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
@@ -11037,7 +11206,7 @@ function modalHTML(){
     newDept:()=>newDeptHTML(),editDept:()=>editDeptHTML(data),newSubDept:()=>newSubDeptHTML(data),editSubDept:()=>editSubDeptHTML(data),
     editStatuses:()=>editStatusesHTML(data),
     newClient:()=>newClientHTML(),editClient:()=>editClientHTML(data),
-    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),clientUserAdmin:()=>clientUserAdminHTML(data.userId),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
+    importTasks:()=>importTasksHTML(),notifCentre:()=>notifCentreHTML(),newReminder:()=>newReminderHTML(),editReminder:()=>editReminderHTML(data),newTemplate:()=>newTemplateHTML(modalState.data||{}),importClients:()=>importClientsHTML(),whatsappConfig:()=>whatsappConfigHTML(),taskWhatsApp:()=>taskWhatsAppHTML(modalState.data||{}),settUsers:()=>settUsersHTML(),settClientUsers:()=>settClientUsersHTML(),clientUserAdmin:()=>clientUserAdminHTML(data.userId),createClientUser:()=>createClientUserHTML(),cpTaskDetail:()=>cpTaskDetailHTML(data),cpViewInvoice:()=>cpViewInvoiceHTML(data),settDepts:()=>settDeptsHTML(),settStatuses:()=>settStatusesHTML(),settClients:()=>settClientsHTML(),
     settRecurring:()=>settRecurringHTML(),settTemplates:()=>settTemplatesHTML(),newRecurring:()=>recurringFormHTML(),editRecurring:()=>recurringFormHTML(RECURRING.find(r=>r.id===data.id)),
     settFirms:()=>settFirmsHTML(),newFirm:()=>firmFormHTML(),editFirm:()=>firmFormHTML(FIRMS.find(f=>f.id===data.id)),
     settEmailJS:()=>settEmailJSHTML(),
@@ -12268,6 +12437,64 @@ async function adminSetClientPwdInline(userId){
     closeModal(); render();
   }catch(e){toast('Error: '+e.message);}
 }
+// ─── Create Client Portal User (admin) ────────────────────────────────────
+function createClientUserHTML(){
+  const clients=(CLIENTS||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  return`${mHdr('Create Client Portal User')}
+  <div style="padding:0 2px">
+  <div class="form-row">
+    <label class="form-label">Full Name <span style="color:var(--red)">*</span></label>
+    <input id="ccu-name" class="form-input" placeholder="e.g. Ramesh Shah"/>
+  </div>
+  <div class="form-row">
+    <label class="form-label">Email Address <span style="color:var(--red)">*</span></label>
+    <input id="ccu-email" class="form-input" type="email" placeholder="client@example.com"/>
+  </div>
+  <div class="form-row">
+    <label class="form-label">Password <span style="color:var(--red)">*</span></label>
+    <input id="ccu-pwd" class="form-input" type="text" placeholder="Min 6 characters"/>
+    <div style="font-size:11px;color:var(--text3);margin-top:3px">Share this password with the client securely.</div>
+  </div>
+  <div class="form-row">
+    <label class="form-label">Linked Client <span style="color:var(--red)">*</span></label>
+    <select id="ccu-client" class="form-select">
+      <option value="">— Select client —</option>
+      ${clients.map(cl=>`<option value="${cl.id}">${escHtml(cl.name)}</option>`).join('')}
+    </select>
+  </div>
+  <div id="ccu-err" style="color:var(--red);font-size:12px;margin-bottom:8px"></div>
+  <button class="btn btn-primary w-full" onclick="createClientUserSubmit()">Create User</button>
+  </div>`;
+}
+
+async function createClientUserSubmit(){
+  const name=(document.getElementById('ccu-name')?.value||'').trim();
+  const email=(document.getElementById('ccu-email')?.value||'').trim().toLowerCase();
+  const pwd=(document.getElementById('ccu-pwd')?.value||'').trim();
+  const clientId=document.getElementById('ccu-client')?.value||'';
+  const errEl=document.getElementById('ccu-err');
+  function setErr(msg){if(errEl)errEl.textContent=msg;}
+  if(!name){setErr('Name is required');return;}
+  if(!email||!/^[^@]+@[^@]+\.[^@]+$/.test(email)){setErr('Valid email is required');return;}
+  if(!pwd||pwd.length<6){setErr('Password must be at least 6 characters');return;}
+  if(!clientId){setErr('Please select a client');return;}
+  // Check duplicate email
+  if(USERS.find(u=>u.email&&u.email.toLowerCase()===email)){setErr('A user with this email already exists');return;}
+  setErr('');
+  const userId=uid();
+  const userRecord={id:userId,name,email,role:'client',active:true,clientId,
+    createdAt:today(),createdBy:currentUser.id};
+  try{
+    await db.ref('users/'+userId).set(userRecord);
+    // Write client_activations so login works immediately
+    var emailKey=btoa(email).replace(/[^a-zA-Z0-9]/g,'_');
+    await db.ref('client_activations/'+emailKey).set({userId,email,tempPass:pwd,currentPass:null,createdAt:today()}).catch(function(){});
+    toast('✓ Client user created: '+name+' ('+email+')\nPassword: '+pwd);
+    closeModal(); render();
+  }catch(e){setErr('Error: '+e.message);}
+}
+
+
 function settClientUsersHTML(){
   if(!window._clientUserSearch) window._clientUserSearch='';
   // Silently backfill any client users missing from client_activations
@@ -12281,6 +12508,7 @@ function settClientUsersHTML(){
   return`${mHdr('Client Portal Users')}
   <div class="flex-between mb-12">
     <div style="font-size:13px;color:var(--text3)">${clientUsers.length} client account${clientUsers.length!==1?'s':''}</div>
+    <button class="btn btn-primary btn-sm" onclick="openModal('createClientUser',{})">+ New User</button>
   </div>
   <div style="margin-bottom:10px"><input class="form-input" id="sett-cu-search" placeholder="Search by name, email, or client…" value="${window._clientUserSearch||''}" onfocus="document.body.dataset.lastSearchFocus='sett-cu-search'" oninput="window._clientUserSearch=this.value;render()"/></div>
   ${filtered.length===0?'<div style="text-align:center;color:var(--text3);padding:20px;font-size:13px">No client accounts found</div>':''}
@@ -12290,7 +12518,7 @@ function settClientUsersHTML(){
     return`<div class="list-item" style="cursor:pointer" data-uid="${u.id}" onclick="openClientUserModal(this.dataset.uid)">
       <div class="avatar ${avClass(u.id)}" style="width:36px;height:36px;font-size:12px;flex-shrink:0">${initials(u.name)}</div>
       <div style="flex:1;min-width:0">
-        <div class="li-name">${u.name}${!isActive?'<span style="font-size:10px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:1px 5px;margin-left:6px">Inactive</span>':u.pendingPasswordReset?'<span style="font-size:10px;background:#fef9c3;color:#ca8a04;border-radius:4px;padding:1px 5px;margin-left:6px">Pwd pending</span>':''}</div>
+        <div class="li-name">${u.name}${!isActive?'<span style="font-size:10px;background:var(--red-bg);color:var(--red);border-radius:4px;padding:1px 5px;margin-left:6px">Inactive</span>':false?'':''}</div>
         <div class="li-sub">${u.email||'no email'}${cl?' · '+cl.name:' · <span style="color:var(--red)">no client linked</span>'}</div>
       </div>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>

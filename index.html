@@ -209,6 +209,8 @@ body{background:var(--bg);color:var(--text);overflow-x:hidden;font-family:var(--
 .running-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite;flex-shrink:0}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.6)}}
 .animate-in{display:block;width:100%;animation:fadeUp .25s ease both}
+.ai-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:aiPulse 1.2s ease-in-out infinite}
+@keyframes aiPulse{0%,100%{opacity:0.3;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .color-swatch{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent}.color-swatch.picked{border-color:var(--text)}
 /* LOGIN */
@@ -620,6 +622,54 @@ let perfDrill=null; // userId for perf drill-down
 let perfDrillDay=null; // date for second level drill
 let fontSize=LS.get('fontSize',14);
 let navCollapsed=LS.get('navCollapsed',false);
+let AI_CFG={}; // {apiKey, provider:'openai'|'claude', allowedTopics:[], model}
+let aiHistory=[]; // [{role,content}]
+let aiLoading=false;
+
+// ─── Daily rotating quotes ───────────────────────────────────────────────────
+const DAILY_QUOTES=[
+  {q:"The secret of getting ahead is getting started.",a:"Mark Twain"},
+  {q:"It always seems impossible until it's done.",a:"Nelson Mandela"},
+  {q:"Quality is not an act, it is a habit.",a:"Aristotle"},
+  {q:"The expert in anything was once a beginner.",a:"Helen Hayes"},
+  {q:"Success is the sum of small efforts, repeated day in and day out.",a:"Robert Collier"},
+  {q:"Don't watch the clock; do what it does. Keep going.",a:"Sam Levenson"},
+  {q:"Opportunities don't happen. You create them.",a:"Chris Grosser"},
+  {q:"The harder you work for something, the greater you'll feel when you achieve it.",a:"Anonymous"},
+  {q:"Dream big and dare to fail.",a:"Norman Vaughan"},
+  {q:"We may encounter many defeats but we must not be defeated.",a:"Maya Angelou"},
+  {q:"Knowing is not enough; we must apply. Willing is not enough; we must do.",a:"Goethe"},
+  {q:"The way to get started is to quit talking and begin doing.",a:"Walt Disney"},
+  {q:"Do what you can, with what you have, where you are.",a:"Theodore Roosevelt"},
+  {q:"It does not matter how slowly you go as long as you do not stop.",a:"Confucius"},
+  {q:"Start where you are. Use what you have. Do what you can.",a:"Arthur Ashe"},
+  {q:"Believe you can and you're halfway there.",a:"T. Roosevelt"},
+  {q:"Act as if what you do makes a difference. It does.",a:"William James"},
+  {q:"Success is not final, failure is not fatal: it is the courage to continue that counts.",a:"Churchill"},
+  {q:"You are never too old to set another goal or to dream a new dream.",a:"C.S. Lewis"},
+  {q:"When you have a dream, you've got to grab it and never let go.",a:"Carol Burnett"},
+  {q:"The function of leadership is to produce more leaders, not more followers.",a:"Ralph Nader"},
+  {q:"Perfection is not attainable, but if we chase it we can catch excellence.",a:"Vince Lombardi"},
+  {q:"Do or do not. There is no try.",a:"Yoda"},
+  {q:"The best time to plant a tree was 20 years ago. The second best time is now.",a:"Chinese Proverb"},
+  {q:"An investment in knowledge pays the best interest.",a:"Benjamin Franklin"},
+  {q:"Strive not to be a success, but rather to be of value.",a:"Albert Einstein"},
+  {q:"I find that the harder I work, the more luck I seem to have.",a:"Thomas Jefferson"},
+  {q:"Success usually comes to those who are too busy to be looking for it.",a:"Henry David Thoreau"},
+  {q:"Don't be afraid to give up the good to go for the great.",a:"John D. Rockefeller"},
+  {q:"I have not failed. I've just found 10,000 ways that won't work.",a:"Thomas Edison"},
+];
+function getDailyQuote(){
+  const day=Math.floor(Date.now()/86400000);
+  return DAILY_QUOTES[day%DAILY_QUOTES.length];
+}
+function getGreeting(){
+  const h=new Date().getHours();
+  if(h<12) return 'Good morning';
+  if(h<17) return 'Good afternoon';
+  if(h<20) return 'Good evening';
+  return 'Good night';
+}
 // Apply saved theme on load
 (()=>{const saved=LS.get('accentTheme','green');const themes={green:'#7ED957',blue:'#4A9EFF',purple:'#A78BFA',amber:'#F5A623',rose:'#F472B6',teal:'#2DD4BF',red:'#F87171'};const bgs={green:'rgba(126,217,87,.12)',blue:'rgba(74,158,255,.12)',purple:'rgba(167,139,250,.12)',amber:'rgba(245,166,35,.12)',rose:'rgba(244,114,182,.12)',teal:'rgba(45,212,191,.12)',red:'rgba(248,113,113,.12)'};if(themes[saved]){document.documentElement.style.setProperty('--accent',themes[saved]);document.documentElement.style.setProperty('--accent-bg',bgs[saved]);}})();
 document.documentElement.style.setProperty('--base-font',fontSize+'px');
@@ -640,6 +690,7 @@ let notifLog=LS.get('notifLog',[]);
 document.documentElement.setAttribute('data-theme',darkMode?'dark':'light');
 
 function today(){return new Date().toISOString().slice(0,10)}
+function escHtml(s){if(s==null)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function firstOfMonth(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`}
 
 // ═══════════════════════════════════════
@@ -859,6 +910,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     render();
   });
   db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
+  db.ref('ai_config').on('value',s=>{AI_CFG=s.val()||{};});
 }
 
 // ═══════════════════════════════════════
@@ -6737,6 +6789,7 @@ function sideNavHTML(){
     {id:'reminders-list',label:'Reminders',icon:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'},
 
 
+    {id:'ai',label:'Ask AI',icon:'<path d="M12 2a9 9 0 0 1 9 9c0 3.1-1.6 5.8-4 7.4V21l-5-2-5 2v-2.6A9 9 0 0 1 12 2z"/><circle cx="9" cy="11" r="1"/><circle cx="12" cy="11" r="1"/><circle cx="15" cy="11" r="1"/>',color:'var(--purple)'},
     {id:'settings',label:'Settings',icon:'<circle cx="12" cy="12" r="3"/>'},
   ];
   const nc=navCollapsed;
@@ -6796,6 +6849,7 @@ function pageHTML(){
   if(curPage==='templates')return templatesPage();
   if(curPage==='settings')return settingsPage();
   if(curPage==='workflow')return workflowRulesPageHTML();
+  if(curPage==='ai')return aiPage();
   return '';
 }
 
@@ -6813,11 +6867,32 @@ function dashPage(){
     return '<div class="tab'+(curTab===i?' active':'')+'" data-tab="'+i+'">'+t+'</div>';
   }).join('');
 
+  // ── Personalized greeting header ──────────────────────────────────────────
+  const _qt=getDailyQuote();
+  const _fn=currentUser.name.split(' ')[0];
+  const _greet=getGreeting();
+  const _now=new Date();
+  const _dateStr=_now.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const dashHeader=`
+    <div style="background:linear-gradient(135deg,var(--bg2) 0%,var(--accent-bg) 100%);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px;margin-bottom:14px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:18px;font-weight:700;color:var(--text1);line-height:1.2">${_greet}, ${_fn}! 👋</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:3px">${_dateStr}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="openModal('quickTask',{})">⚡ Quick Task</button>
+      </div>
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--text2);font-style:italic;line-height:1.5">"${_qt.q}"</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px">— ${_qt.a}</div>
+      </div>
+    </div>`;
+
   if(curTab===0){
-    return'<div class="page-header" style="margin-bottom:8px"><div class="page-title">Dashboard</div><button class="btn btn-ghost btn-sm" onclick="openModal(\'quickTask\',{})">⚡ Quick Task</button></div><div class="tabs">'+tabHtml+'</div>'+overviewDash();
+    return dashHeader+'<div class="tabs">'+tabHtml+'</div>'+overviewDash();
   }
   if(curTab===1){
-    return'<div class="page-header" style="margin-bottom:8px"><div class="page-title">Dashboard</div><button class="btn btn-ghost btn-sm" onclick="openModal(\'quickTask\',{})">⚡ Quick Task</button></div><div class="tabs">'+tabHtml+'</div>'+dueTodayDash();
+    return dashHeader+'<div class="tabs">'+tabHtml+'</div>'+dueTodayDash();
   }
   if((role==='superadmin'||role==='manager')&&curTab===2){
     // My Tasks tab - tasks assigned to me + reminders + private
@@ -6837,7 +6912,7 @@ function dashPage(){
     var myNoDate=myAssigned.filter(function(t){return !t.dueDate;});
     var myRems=REMINDERS.filter(function(r){return r.userId===currentUser.id&&!r.done&&(r.date||'9999')>=today();}).slice(0,10);
     var myPriv=TASKS.filter(function(t){return t.private&&!isTaskTerminal(t)&&taskAssignees(t).some(function(a){return a.id===currentUser.id;});});
-    var html='<div class="page-title mb-4">Dashboard</div><div class="tabs">'+tabHtml+'</div>';
+    var html=dashHeader+'<div class="tabs">'+tabHtml+'</div>';
     html+='<div class="g3 mb-14">';
     html+='<div class="stat-card"><div class="sc-label">Assigned To Me</div><div class="sc-val">'+myAssigned.length+'</div></div>';
     html+='<div class="stat-card" style="'+(myOverdue.length?'border-color:var(--red)':'')+'"><div class="sc-label">Overdue</div><div class="sc-val" style="color:'+(myOverdue.length?'var(--red)':'var(--text2)')+'">'+myOverdue.length+'</div></div>';
@@ -6858,7 +6933,7 @@ function dashPage(){
   var noDueDateTab=(role==='superadmin'||role==='manager')?3:2;
   if(curTab===noDueDateTab){
     var noDueTasks=myTasks().filter(function(t){return !t.dueDate&&!isTaskTerminal(t);});
-    var html2='<div class="page-title mb-4">Dashboard</div><div class="tabs">'+tabHtml+'</div>';
+    var html2=dashHeader+'<div class="tabs">'+tabHtml+'</div>';
     html2+='<div class="section-label">Tasks without due dates ('+noDueTasks.length+')</div>';
     html2+=noDueTasks.length?noDueTasks.map(taskCard).join(''):'<div style="text-align:center;padding:3rem;color:var(--text3)">No tasks without due dates ✓</div>';
     return html2;
@@ -6870,7 +6945,7 @@ function dashPage(){
   var overdue=active.filter(function(t){return dueStatus(t.dueDate,t.startDate)==='overdue';});
   var pending=deptTasks.filter(function(t){return t.approvalStatus==='pending';});
 
-  return '<div class="page-title mb-4">Dashboard</div><div class="tabs">'+tabHtml+'</div>'
+  return dashHeader+'<div class="tabs">'+tabHtml+'</div>'
     +'<div class="g3 mb-12">'
     +'<div class="stat-card"><div class="sc-label">Active</div><div class="sc-val">'+active.length+'</div></div>'
     +'<div class="stat-card"><div class="sc-label" style="color:var(--red)">Overdue</div><div class="sc-val" style="color:var(--red)">'+overdue.length+'</div></div>'
@@ -6902,6 +6977,47 @@ function overviewDash(){
     const canSee=currentUser.role==='superadmin'||(currentUser.role==='manager'&&tasks.some(t=>t.id===c.taskId))||c.createdByUserId===currentUser.id||c.taskAssigneeId===currentUser.id;
     return canSee&&(!c.udin||!validateUDIN(c.udin));
   });
+  // ── 15-day due date mini-calendar ──────────────────────────────────────────
+  const _15days=(()=>{
+    const todayD=today();
+    const days=[];
+    for(let i=0;i<15;i++){
+      const d=new Date();d.setDate(d.getDate()+i);
+      const ds=d.toISOString().slice(0,10);
+      const dayTasks=tasks.filter(t=>!isTaskTerminal(t)&&t.dueDate===ds);
+      days.push({ds,d,tasks:dayTasks});
+    }
+    const depts=new Map(DEPTS.map(d=>[d.id,d]));
+    const dayNames=['Su','Mo','Tu','We','Th','Fr','Sa'];
+    const monthNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `<div style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="section-label" style="margin:0">📅 Next 15 Days</div>
+        <button class="btn btn-ghost btn-xs" onclick="navigate('calendar')">Full Calendar →</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:5px">
+        ${days.map(({ds,d,tasks:dt})=>{
+          const isToday=ds===todayD;
+          const hasOver=dt.some(t=>dueStatus(t.dueDate,t.startDate)==='overdue');
+          const hasHigh=dt.some(t=>(t.priority||'').toLowerCase()==='high');
+          const dotColors=dt.length?[...new Set(dt.map(t=>depts.get(t.deptId)?.color||'var(--accent)'))].slice(0,3):[];
+          return `<div style="background:${isToday?'var(--accent-bg)':'var(--bg2)'};border:1.5px solid ${isToday?'var(--accent)':'var(--border)'};border-radius:8px;padding:6px 4px;cursor:${dt.length?'pointer':'default'};text-align:center;min-height:62px;display:flex;flex-direction:column;align-items:center;justify-content:space-between"
+            ${dt.length?`onclick="navigate('calendar');calViewDate=new Date('${ds}');calSelectedDate='${ds}';render()"`:''}
+          >
+            <div style="font-size:9px;color:var(--text3);font-weight:500">${dayNames[d.getDay()]}</div>
+            <div style="font-size:14px;font-weight:${isToday?700:500};color:${isToday?'var(--accent)':'var(--text1)'}">${d.getDate()}</div>
+            <div style="font-size:9px;color:var(--text3)">${monthNames[d.getMonth()]}</div>
+            ${dt.length?`<div style="display:flex;gap:2px;justify-content:center;flex-wrap:wrap;margin-top:2px">
+              ${dotColors.map(c=>`<div style="width:5px;height:5px;border-radius:50%;background:${c}"></div>`).join('')}
+            </div>
+            <div style="font-size:9px;font-weight:600;color:${hasOver?'var(--red)':hasHigh?'var(--amber)':'var(--accent)'}">${dt.length} task${dt.length>1?'s':''}</div>`
+            :'<div style="height:14px"></div>'}
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  })();
+
   return`
     ${runTask?`<div class="card mb-16" style="border-color:var(--accent)"><div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);margin-bottom:8px"><div class="running-dot"></div>${runTask.title}</div>
     <div class="btv" style="font-family:var(--mono);font-size:32px;font-weight:600;color:var(--accent);text-align:center;padding:10px 0">${fmtTimer(runSec)}</div>
@@ -6912,6 +7028,7 @@ function overviewDash(){
       ${role!=='employee'?`<div class="stat-card" style="cursor:pointer;${pending.length?'border-color:var(--amber)':''}" onclick="navigate('tasks',2)"><div class="sc-label">Approvals</div><div class="sc-val" style="color:var(--amber)">${pending.length}</div><div class="sc-dot" style="background:var(--amber)"></div></div>`:
       `<div class="stat-card"><div class="sc-label">Done</div><div class="sc-val" style="color:var(--accent)">${done.length}</div></div>`}
     </div>
+    ${_15days}
     ${udinPending.length?`<div style="background:var(--purple-bg);border:1px solid rgba(167,139,250,.25);border-radius:var(--r2);padding:12px 14px;margin-bottom:16px;cursor:pointer" onclick="navigate('certs')">
       <div style="font-size:12px;font-weight:600;color:var(--purple);margin-bottom:4px">📋 ${udinPending.length} certificate${udinPending.length>1?'s':''} awaiting UDIN entry</div>
       <div style="font-size:11px;color:var(--text3)">Tap to view certificate register →</div>
@@ -9590,6 +9707,169 @@ async function sendAllDigests(){
 }
 
 // ═══════════════════════════════════════
+//  AI ASK PAGE
+// ═══════════════════════════════════════
+function aiPage(){
+  const isSA=currentUser.role==='superadmin';
+  const cfg=AI_CFG||{};
+  const topics=Array.isArray(cfg.allowedTopics)&&cfg.allowedTopics.length?cfg.allowedTopics:['Tax & GST','Audit & Assurance','Company Law','FEMA & FDI','Accounting Standards','Office Processes','Client Work','General Finance'];
+  return`
+  <div class="page-header" style="margin-bottom:12px">
+    <div>
+      <div class="page-title">Ask AI</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">Office-scoped assistant · Restricted to allowed topics</div>
+    </div>
+    ${isSA?`<button class="btn btn-ghost btn-sm" onclick="openModal('aiConfig',{})">⚙ Configure</button>`:''}
+  </div>
+
+  ${!cfg.apiKey?`
+    <div style="text-align:center;padding:3rem 2rem;background:var(--bg2);border:1px dashed var(--border);border-radius:var(--r2)">
+      <div style="font-size:36px;margin-bottom:12px">🤖</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:6px">AI not configured yet</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">Ask your super admin to add an API key in AI Settings.</div>
+      ${isSA?`<button class="btn btn-primary btn-sm" onclick="openModal('aiConfig',{})">Set Up AI →</button>`:''}
+    </div>`:
+  `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+    <!-- Allowed topics chips -->
+    <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:5px;align-items:center">
+      <span style="font-size:10px;color:var(--text3);margin-right:4px">Topics:</span>
+      ${topics.map(t=>`<span style="background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent);border-radius:99px;font-size:10px;padding:2px 8px">${t}</span>`).join('')}
+    </div>
+    <!-- Chat messages -->
+    <div id="ai-msgs" style="min-height:300px;max-height:50vh;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px">
+      ${aiHistory.length===0?`<div style="text-align:center;padding:3rem 1rem;color:var(--text3)">
+        <div style="font-size:28px;margin-bottom:8px">💬</div>
+        <div style="font-size:13px;font-weight:500;margin-bottom:6px">Ask anything about your practice</div>
+        <div style="font-size:11px">Restricted to: ${topics.slice(0,3).join(', ')}${topics.length>3?' & more':''}</div>
+      </div>`:
+      aiHistory.map(m=>`<div style="display:flex;${m.role==='user'?'justify-content:flex-end':''};gap:8px">
+        ${m.role==='assistant'?`<div style="width:26px;height:26px;border-radius:50%;background:var(--accent-bg);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0">🤖</div>`:''}
+        <div style="max-width:85%;background:${m.role==='user'?'var(--accent)':'var(--bg3)'};color:${m.role==='user'?'#000':'var(--text1)'};padding:10px 13px;border-radius:${m.role==='user'?'14px 14px 4px 14px':'14px 14px 14px 4px'};font-size:13px;line-height:1.5;white-space:pre-wrap">${escHtml(m.content)}</div>
+        ${m.role==='user'?`<div style="width:26px;height:26px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex-shrink:0">${initials(currentUser.name)}</div>`:''}
+      </div>`).join('')}
+      ${aiLoading?`<div style="display:flex;gap:8px;align-items:center"><div style="width:26px;height:26px;border-radius:50%;background:var(--accent-bg);border:1px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px">🤖</div><div style="background:var(--bg3);padding:10px 14px;border-radius:14px 14px 14px 4px;display:flex;gap:4px"><div class="ai-dot"></div><div class="ai-dot" style="animation-delay:.2s"></div><div class="ai-dot" style="animation-delay:.4s"></div></div></div>`:''}
+    </div>
+    <!-- Input -->
+    <div style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end">
+      <textarea id="ai-input" rows="2" class="form-input" placeholder="Ask about tax, audit, GST, office processes…" style="flex:1;resize:none;font-size:13px;padding:8px 10px"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAIMessage();}"></textarea>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <button class="btn btn-primary btn-sm" onclick="sendAIMessage()" style="padding:8px 14px" ${aiLoading?'disabled':''}>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+        ${aiHistory.length?`<button class="btn btn-ghost btn-xs" onclick="clearAIChat()" title="Clear chat">✕</button>`:''}
+      </div>
+    </div>
+  </div>`}
+
+  <!-- Suggested prompts if no history -->
+  ${!cfg.apiKey||aiHistory.length?'':
+  `<div style="margin-top:14px">
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Suggested questions</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${['What is the threshold for tax audit under section 44AB?',
+         'Explain GST input tax credit reversal rules',
+         'Key differences between Ind AS 116 and AS 19?',
+         'Steps for new client onboarding in our office',
+         'What are the UDIN requirements for audit reports?',
+      ].map(q=>`<button class="btn btn-ghost btn-sm" style="font-size:11px;text-align:left;white-space:normal;height:auto;padding:6px 10px;max-width:220px" onclick="document.getElementById('ai-input').value='${q.replace(/'/g,"\\'")}';sendAIMessage()">${q}</button>`).join('')}
+    </div>
+  </div>`}
+  `;
+}
+async function sendAIMessage(){
+  const inp=document.getElementById('ai-input');
+  if(!inp)return;
+  const msg=(inp.value||'').trim();
+  if(!msg||aiLoading)return;
+  const cfg=AI_CFG||{};
+  if(!cfg.apiKey){toast('AI not configured. Ask super admin to add API key.');return;}
+  const topics=Array.isArray(cfg.allowedTopics)&&cfg.allowedTopics.length?cfg.allowedTopics:['Tax & GST','Audit & Assurance','Company Law','FEMA & FDI','Accounting Standards','Office Processes','Client Work','General Finance'];
+  inp.value='';
+  aiHistory.push({role:'user',content:msg});
+  aiLoading=true;render();
+  // Scroll to bottom
+  setTimeout(()=>{const el=document.getElementById('ai-msgs');if(el)el.scrollTop=el.scrollHeight;},50);
+  try{
+    const provider=cfg.provider||'openai';
+    const model=cfg.model||(provider==='openai'?'gpt-4o-mini':'claude-3-5-haiku-20241022');
+    const systemPrompt=`You are an office assistant for R B Shah & Associates, a CA firm in Rajkot. You ONLY answer questions about these topics: ${topics.join(', ')}. If a question is off-topic, politely decline and suggest asking about the allowed topics. Be concise, professional, and accurate. Where possible, cite relevant section numbers, rules or standards.`;
+    let reply='';
+    if(provider==='openai'){
+      const resp=await fetch('https://api.openai.com/v1/chat/completions',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},
+        body:JSON.stringify({model,messages:[{role:'system',content:systemPrompt},...aiHistory],max_tokens:1000,temperature:0.3})
+      });
+      const j=await resp.json();
+      if(j.error){throw new Error(j.error.message||'OpenAI error');}
+      reply=j.choices?.[0]?.message?.content||'No response';
+    } else {
+      // Anthropic Claude
+      const resp=await fetch('https://api.anthropic.com/v1/messages',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-api-key':cfg.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model,system:systemPrompt,messages:aiHistory.filter(m=>m.role!=='system'),max_tokens:1000})
+      });
+      const j=await resp.json();
+      if(j.error){throw new Error(j.error.message||'Anthropic error');}
+      reply=j.content?.[0]?.text||'No response';
+    }
+    aiHistory.push({role:'assistant',content:reply});
+  }catch(e){
+    aiHistory.push({role:'assistant',content:'⚠ Error: '+e.message});
+  }
+  aiLoading=false;render();
+  setTimeout(()=>{const el=document.getElementById('ai-msgs');if(el)el.scrollTop=el.scrollHeight;},50);
+}
+function clearAIChat(){aiHistory=[];aiLoading=false;render();}
+function aiConfigHTML(){
+  const isSA=currentUser.role==='superadmin';
+  if(!isSA)return mHdr('AI Config')+'<p style="color:var(--text3);font-size:13px">Only super admins can configure AI.</p>';
+  const cfg=AI_CFG||{};
+  const topics=(cfg.allowedTopics||['Tax & GST','Audit & Assurance','Company Law','FEMA & FDI','Accounting Standards','Office Processes','Client Work','General Finance']).join('\n');
+  return`${mHdr('AI Ask — Configuration')}
+  <div class="form-row"><label class="form-label">Provider</label>
+  <select class="form-select" id="ai-provider">
+    <option value="openai" ${(cfg.provider||'openai')==='openai'?'selected':''}>OpenAI (GPT)</option>
+    <option value="claude" ${cfg.provider==='claude'?'selected':''}>Anthropic (Claude)</option>
+  </select></div>
+  <div class="form-row"><label class="form-label">API Key</label>
+  <input class="form-input" type="password" id="ai-apikey" value="${cfg.apiKey||''}" placeholder="sk-..." autocomplete="new-password"/></div>
+  <div class="form-row"><label class="form-label">Model <span style="color:var(--text3);font-size:10px">(leave blank for default)</span></label>
+  <input class="form-input" id="ai-model" value="${cfg.model||''}" placeholder="gpt-4o-mini / claude-3-5-haiku-20241022"/></div>
+  <div class="form-row"><label class="form-label">Allowed Topics <span style="color:var(--text3);font-size:10px">(one per line)</span></label>
+  <textarea class="form-input" id="ai-topics" rows="6" style="resize:vertical">${topics}</textarea></div>
+  <div style="display:flex;gap:8px;margin-top:4px">
+    <button class="btn btn-primary" style="flex:1" onclick="saveAIConfig()">Save</button>
+    ${cfg.apiKey?`<button class="btn btn-ghost btn-sm" onclick="testAIConfig()">Test</button>`:''}
+  </div>
+  <div style="margin-top:12px;background:var(--bg3);border-radius:var(--r);padding:10px 12px;font-size:11px;color:var(--text3)">
+    🔒 API key is stored encrypted in Firebase and only accessible to super admins. Users can search within allowed topics only.
+  </div>`;
+}
+async function saveAIConfig(){
+  const provider=document.getElementById('ai-provider')?.value||'openai';
+  const apiKey=document.getElementById('ai-apikey')?.value?.trim()||'';
+  const model=document.getElementById('ai-model')?.value?.trim()||'';
+  const topicsRaw=document.getElementById('ai-topics')?.value||'';
+  const allowedTopics=topicsRaw.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!apiKey){toast('API key is required');return;}
+  await fbSet('ai_config',{provider,apiKey,model,allowedTopics});
+  toast('AI config saved ✓');closeModal();
+}
+async function testAIConfig(){
+  const cfg=AI_CFG||{};
+  if(!cfg.apiKey){toast('No API key saved yet');return;}
+  toast('Testing...');
+  const prev=aiHistory.slice();
+  aiHistory=[{role:'user',content:'Say "AI connected ✓" and nothing else.'}];
+  await sendAIMessage();
+  aiHistory=prev;
+  navigate('ai');
+}
+
+// ═══════════════════════════════════════
 //  SETTINGS PAGE
 // ═══════════════════════════════════════
 function settingsPage(){
@@ -9680,6 +9960,7 @@ function modalHTML(){
     mergeClients:()=>mergeClientsHTML(),
     newDM:()=>newDMHTML(),newChatGroup:()=>newChatGroupHTML(),manageChatGroup:()=>manageChatGroupHTML(data),
     batchLog:()=>batchLogHTML(data),
+    aiConfig:()=>aiConfigHTML(),
   };
   const fn=map[type];if(!fn)return'';
   const wideTypes=['taskDetail','clientDetail'];const isWide=wideTypes.includes(type);
@@ -10448,6 +10729,16 @@ function taskDetailHTML(data){
 `;
 }
 
+function attachmentListHTML(taskId){
+  const atts=window._taskAttachments&&window._taskAttachments[taskId]?Object.values(window._taskAttachments[taskId]):[];
+  if(!atts.length) return '<div style="font-size:11px;color:var(--text3)">No attachments yet.</div>';
+  return atts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
+    <span>📄</span>
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(a.name||a.key||'File')}</span>
+    <span style="color:var(--text3)">${a.size?Math.round(a.size/1024)+'KB':''}</span>
+    ${R2_CFG&&a.key?`<a href="${R2_CFG.workerUrl}/download?key=${encodeURIComponent(a.key)}" target="_blank" class="btn btn-ghost btn-xs">⬇</a>`:''}
+  </div>`).join('');
+}
 async function toggleCertificate(taskId){
   const existing=getCert(taskId);
   if(existing){

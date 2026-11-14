@@ -9717,7 +9717,7 @@ function aiPage(){
   <div class="page-header" style="margin-bottom:12px">
     <div>
       <div class="page-title">Ask AI</div>
-      <div style="font-size:11px;color:var(--text3);margin-top:2px">Office-scoped assistant · Restricted to allowed topics${AI_CFG&&AI_CFG.provider==='perplexity'?' · 🌐 Live web search':''}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px">Office-scoped assistant · Restricted to allowed topics${AI_CFG&&AI_CFG.searchKey?' · 🌐 Live web search':''}</div>
     </div>
     ${isSA?`<button class="btn btn-ghost btn-sm" onclick="openModal('aiConfig',{})">⚙ Configure</button>`:''}
   </div>
@@ -9732,9 +9732,9 @@ function aiPage(){
   `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
     <!-- Knowledge disclaimer -->
     ${(()=>{
-      const p=AI_CFG&&AI_CFG.provider;
-      if(p==='perplexity') return `<div style="padding:7px 14px;background:#e8f5e9;border-bottom:1px solid #a5d6a7;font-size:11px;color:#2e7d32;display:flex;align-items:center;gap:6px"><span>🌐</span><span><strong>Live web search ON</strong> — answers include latest circulars, notifications &amp; amendments up to today.</span></div>`;
-      return `<div style="padding:7px 14px;background:var(--yellow-bg,#fffbe6);border-bottom:1px solid var(--yellow,#f59e0b);font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px"><span>⚠️</span><span><strong>Knowledge cutoff:</strong> ${p==='gemini'?'Early 2024':'Oct 2023'} — for recent circulars/notifications, verify on <a href="https://incometaxindia.gov.in" target="_blank" style="color:var(--accent)">IT portal</a> or <a href="https://gst.gov.in" target="_blank" style="color:var(--accent)">GST portal</a>. <em>Switch to Perplexity for live search.</em></span></div>`;
+      const cfg=AI_CFG||{};
+      if(cfg.searchKey) return `<div style="padding:7px 14px;background:#e8f5e9;border-bottom:1px solid #a5d6a7;font-size:11px;color:#2e7d32;display:flex;align-items:center;gap:6px"><span>🌐</span><span><strong>Live web search ON</strong> — answers grounded with fresh results from incometaxindia.gov.in, cbic.gov.in &amp; more.</span></div>`;
+      return `<div style="padding:7px 14px;background:var(--yellow-bg,#fffbe6);border-bottom:1px solid var(--yellow,#f59e0b);font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px"><span>⚠️</span><span><strong>Knowledge cutoff:</strong> ${(cfg.provider||'openai')==='gemini'?'Early 2024':'Oct 2023'} — for recent circulars/notifications, verify on <a href="https://incometaxindia.gov.in" target="_blank" style="color:var(--accent)">IT portal</a>. Add a Perplexity Search key in ⚙ Configure to enable live search.</span></div>`;
     })()}
     <!-- Allowed topics chips -->
     <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:5px;align-items:center">
@@ -9783,6 +9783,49 @@ function aiPage(){
   </div>`}
   `;
 }
+// ── Perplexity Search API (RAG fetch) ────────────────────────────────────────
+// POST https://api.perplexity.ai/search
+// Returns ranked results[]{title,url,snippet,date,last_updated}
+// We use results as grounding context injected into the AI system prompt.
+async function perplexitySearch(query, searchKey){
+  const resp=await fetch('https://api.perplexity.ai/search',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+searchKey},
+    body:JSON.stringify({
+      query,
+      max_results:5,
+      search_recency_filter:'year',       // prefer recent results (last 12 months)
+      country:'IN',                        // India-regional results
+      search_language_filter:['en'],
+      search_domain_filter:[               // prioritise authoritative Indian legal/tax sources
+        'incometaxindia.gov.in',
+        'cbic.gov.in',
+        'mca.gov.in',
+        'rbi.org.in',
+        'icai.org',
+        'gst.gov.in',
+        'taxmann.com',
+        'caclubindia.com'
+      ]
+    })
+  });
+  if(!resp.ok){
+    const err=await resp.json().catch(()=>({}));
+    throw new Error('Search API '+(resp.status===401?'auth error — check your Perplexity key':resp.status===422?'bad request: '+(err.detail?.[0]?.msg||''):resp.status)+' ');
+  }
+  const j=await resp.json();
+  // Dedupe by URL, return at most 5
+  const seen=new Set();
+  return (j.results||[]).filter(r=>{if(seen.has(r.url))return false;seen.add(r.url);return true;}).slice(0,5);
+}
+
+// Build a grounding block from search results to inject into the system prompt
+function buildSearchContext(results){
+  if(!results||!results.length)return'';
+  const lines=results.map((r,i)=>`[${i+1}] ${r.title}${r.date?' ('+r.date+')':''}\n    URL: ${r.url}\n    ${r.snippet||''}`);
+  return`\n\n--- LIVE WEB SEARCH RESULTS (use these as your primary source; cite [N] numbers) ---\n${lines.join('\n\n')}\n--- END SEARCH RESULTS ---`;
+}
+
 async function sendAIMessage(){
   const inp=document.getElementById('ai-input');
   if(!inp)return;
@@ -9794,16 +9837,31 @@ async function sendAIMessage(){
   inp.value='';
   aiHistory.push({role:'user',content:msg});
   aiLoading=true;render();
-  // Scroll to bottom
   setTimeout(()=>{const el=document.getElementById('ai-msgs');if(el)el.scrollTop=el.scrollHeight;},50);
   try{
     const provider=cfg.provider||'openai';
-    const defaultModel=provider==='gemini'?'gemini-1.5-flash':provider==='perplexity'?'sonar':'gpt-4o-mini';
+    const defaultModel=provider==='gemini'?'gemini-1.5-flash':'gpt-4o-mini';
     const model=cfg.model||defaultModel;
-    const systemPrompt=`You are an office assistant for R B Shah & Associates, a CA firm in Rajkot. You ONLY answer questions about these topics: ${topics.join(', ')}. If a question is off-topic, politely decline and suggest asking about the allowed topics. Be concise, professional, and accurate. Where possible, cite relevant section numbers, rules or standards.${provider==='perplexity'?' Always mention the source/circular/notification number if referencing recent amendments.':''}`;
+
+    // ── Step 1: Perplexity Search API grounding (if key configured) ───────────
+    let searchContext='';
+    let searchResults=[];
+    if(cfg.searchKey){
+      try{
+        searchResults=await perplexitySearch(msg, cfg.searchKey);
+        searchContext=buildSearchContext(searchResults);
+      }catch(se){
+        // Non-fatal — degrade gracefully, continue without search context
+        console.warn('Perplexity search failed:',se.message);
+        searchContext=`\n\n[Note: live web search unavailable — ${se.message}]`;
+      }
+    }
+
+    // ── Step 2: AI generation with search context injected ────────────────────
+    const systemPrompt=`You are an office assistant for R B Shah & Associates, a CA firm in Rajkot, India. You ONLY answer questions about these topics: ${topics.join(', ')}. If a question is off-topic, politely decline. Be concise, professional, and accurate. Always cite section numbers, circular numbers, or notification numbers where relevant.${searchContext}`;
+
     let reply='';
     if(provider==='gemini'){
-      // Google Gemini — supports browser CORS
       const geminiUrl=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.apiKey}`;
       const msgs=aiHistory.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
       const resp=await fetch(geminiUrl,{
@@ -9814,44 +9872,27 @@ async function sendAIMessage(){
       const j=await resp.json();
       if(j.error){throw new Error(j.error.message||'Gemini error');}
       reply=j.candidates?.[0]?.content?.parts?.[0]?.text||'No response';
-    } else if(provider==='perplexity'){
-      // Perplexity — chat/completions endpoint with sonar (online search model)
-      const pModel=model||'sonar';
-      const resp=await fetch('https://api.perplexity.ai/chat/completions',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},
-        body:JSON.stringify({
-          model:pModel,
-          messages:[{role:'system',content:systemPrompt},...aiHistory],
-          max_tokens:1000,
-          temperature:0.2,
-          return_citations:true,
-          search_recency_filter:'month'
-        })
-      });
-      const j=await resp.json();
-      if(j.error){throw new Error(j.error.message||'Perplexity error: check your API key');}
-      let text=j.choices?.[0]?.message?.content||'No response';
-      // Append citations if present
-      const cites=j.citations||[];
-      if(cites.length){text+='\n\n📎 Sources:\n'+cites.map((c,i)=>`[${i+1}] ${typeof c==='string'?c:(c.url||c.title||c)}`).join('\n');}
-      reply=text;
     } else {
-      // OpenAI — supports browser CORS with correct key
+      // OpenAI (default)
       const resp=await fetch('https://api.openai.com/v1/chat/completions',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},
-        body:JSON.stringify({model,messages:[{role:'system',content:systemPrompt},...aiHistory],max_tokens:1000,temperature:0.3})
+        body:JSON.stringify({model,messages:[{role:'system',content:systemPrompt},...aiHistory],max_tokens:1200,temperature:0.2})
       });
       const j=await resp.json();
       if(j.error){throw new Error(j.error.message||'OpenAI error: check your API key');}
       reply=j.choices?.[0]?.message?.content||'No response';
     }
+
+    // Append source links from search results
+    if(searchResults.length){
+      reply+='\n\n📎 Sources:\n'+searchResults.map((r,i)=>`[${i+1}] ${r.title}${r.date?' ('+r.date+')':''} — ${r.url}`).join('\n');
+    }
     aiHistory.push({role:'assistant',content:reply});
   }catch(e){
     let errMsg=e.message||'Unknown error';
     if(errMsg.includes('Failed to fetch')||errMsg.includes('NetworkError')){
-      errMsg='Cannot reach AI provider — check your internet connection or the API key provider does not allow browser calls.';
+      errMsg='Cannot reach AI provider — check your internet connection.';
     }
     aiHistory.push({role:'assistant',content:'⚠ '+errMsg});
   }
@@ -9866,18 +9907,21 @@ function aiConfigHTML(){
   const topics=(cfg.allowedTopics||['Tax & GST','Audit & Assurance','Company Law','FEMA & FDI','Accounting Standards','Office Processes','Client Work','General Finance']).join('\n');
   return`${mHdr('AI Ask — Configuration')}
   <div class="form-row"><label class="form-label">Provider</label>
-  <select class="form-select" id="ai-provider" onchange="(function(v){const h=document.getElementById('ai-model-hint');const k=document.getElementById('ai-key-hint');const n=document.getElementById('ai-provider-note');h.textContent=v==='gemini'?'Default: gemini-1.5-flash':v==='perplexity'?'Default: sonar':'Default: gpt-4o-mini';k.textContent=v==='gemini'?'AIza...':v==='perplexity'?'pplx-...':'sk-...';n.innerHTML=v==='perplexity'?'🌐 <strong>Live web search</strong> — answers always current. Get key at <a href=\'https://www.perplexity.ai/settings/api\' target=\'_blank\' style=\'color:var(--accent)\'>perplexity.ai/settings/api</a>':v==='gemini'?'Free tier available at <a href=\'https://aistudio.google.com\' target=\'_blank\' style=\'color:var(--accent)\'>aistudio.google.com</a>. Knowledge cutoff: early 2024.':'Knowledge cutoff Oct 2023. Get key at <a href=\'https://platform.openai.com/api-keys\' target=\'_blank\' style=\'color:var(--accent)\'>platform.openai.com</a>'})(this.value)">
-    <option value="perplexity" ${cfg.provider==='perplexity'?'selected':''}>⭐ Perplexity (Live web search — recommended)</option>
-    <option value="openai" ${(cfg.provider||'openai')==='openai'&&!cfg.provider?'selected':cfg.provider==='openai'?'selected':''}>OpenAI (GPT-4o / GPT-4o-mini)</option>
+  <select class="form-select" id="ai-provider" onchange="(function(v){const h=document.getElementById('ai-model-hint');h.textContent=v==='gemini'?'Default: gemini-1.5-flash':'Default: gpt-4o-mini'})(this.value)">
+    <option value="openai" ${(cfg.provider||'openai')==='openai'?'selected':''}>OpenAI (GPT-4o / GPT-4o-mini)</option>
     <option value="gemini" ${cfg.provider==='gemini'?'selected':''}>Google Gemini (gemini-1.5-flash)</option>
   </select></div>
-  <div id="ai-provider-note" style="margin:-4px 0 10px;background:${cfg.provider==='perplexity'?'#e8f5e9':'var(--yellow-bg,#fffbe6)'};border:1px solid ${cfg.provider==='perplexity'?'#a5d6a7':'var(--yellow,#f59e0b)'};border-radius:6px;padding:8px 10px;font-size:11px;color:var(--text2)">
-    ${cfg.provider==='perplexity'?`🌐 <strong>Live web search</strong> — answers always current. Get key at <a href="https://www.perplexity.ai/settings/api" target="_blank" style="color:var(--accent)">perplexity.ai/settings/api</a>`:cfg.provider==='gemini'?`Free tier available at <a href="https://aistudio.google.com" target="_blank" style="color:var(--accent)">aistudio.google.com</a>. Knowledge cutoff: early 2024.`:`Knowledge cutoff Oct 2023. Get key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color:var(--accent)">platform.openai.com</a>`}
-  </div>
-  <div class="form-row"><label class="form-label">API Key</label>
-  <input class="form-input" type="password" id="ai-apikey" value="${cfg.apiKey||''}" placeholder="${cfg.provider==='gemini'?'AIza...':cfg.provider==='perplexity'?'pplx-...':'sk-...'}" id="ai-key-hint" autocomplete="new-password"/></div>
-  <div class="form-row"><label class="form-label">Model <span id="ai-model-hint" style="color:var(--text3);font-size:10px">${cfg.provider==='gemini'?'Default: gemini-1.5-flash':cfg.provider==='perplexity'?'Default: sonar':'Default: gpt-4o-mini'}</span></label>
+  <div class="form-row"><label class="form-label">AI API Key</label>
+  <input class="form-input" type="password" id="ai-apikey" value="${cfg.apiKey||''}" placeholder="${cfg.provider==='gemini'?'AIza... (Google AI Studio)':'sk-... (OpenAI)'}" autocomplete="new-password"/></div>
+  <div class="form-row"><label class="form-label">Model <span id="ai-model-hint" style="color:var(--text3);font-size:10px">${cfg.provider==='gemini'?'Default: gemini-1.5-flash':'Default: gpt-4o-mini'}</span></label>
   <input class="form-input" id="ai-model" value="${cfg.model||''}" placeholder="Leave blank for default"/></div>
+  <div style="margin:4px 0 8px;border-top:1px solid var(--border);padding-top:12px">
+    <div style="font-size:12px;font-weight:600;margin-bottom:4px">🌐 Live Web Search <span style="font-weight:400;color:var(--accent);font-size:11px">Recommended</span></div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Perplexity Search API grounds answers with live results from incometaxindia.gov.in, cbic.gov.in &amp; more. Get a free key at <a href="https://console.perplexity.ai" target="_blank" style="color:var(--accent)">console.perplexity.ai</a> → API Keys.</div>
+    <div class="form-row" style="margin:0"><label class="form-label">Perplexity Search Key <span style="color:var(--text3);font-size:10px">(optional)</span></label>
+    <input class="form-input" type="password" id="ai-searchkey" value="${cfg.searchKey||''}" placeholder="pplx-..." autocomplete="new-password"/></div>
+    ${cfg.searchKey?`<div style="font-size:11px;color:#2e7d32;margin-top:4px">✓ Live search active</div>`:''}
+  </div>
   <div class="form-row"><label class="form-label">Allowed Topics <span style="color:var(--text3);font-size:10px">(one per line)</span></label>
   <textarea class="form-input" id="ai-topics" rows="6" style="resize:vertical">${topics}</textarea></div>
   <div style="display:flex;gap:8px;margin-top:4px">
@@ -9892,11 +9936,13 @@ async function saveAIConfig(){
   const provider=document.getElementById('ai-provider')?.value||'openai';
   const apiKey=document.getElementById('ai-apikey')?.value?.trim()||'';
   const model=document.getElementById('ai-model')?.value?.trim()||'';
+  const searchKey=document.getElementById('ai-searchkey')?.value?.trim()||'';
   const topicsRaw=document.getElementById('ai-topics')?.value||'';
   const allowedTopics=topicsRaw.split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!apiKey){toast('API key is required');return;}
+  if(!apiKey){toast('AI API key is required');return;}
   const cfg={provider,apiKey,model,allowedTopics};
-  AI_CFG=cfg; // update locally immediately so page re-renders without waiting for Firebase listener
+  if(searchKey)cfg.searchKey=searchKey; // only store if provided
+  AI_CFG=cfg;
   await fbSet('ai_config',cfg);
   toast('AI config saved ✓');closeModal();
 }

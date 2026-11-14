@@ -9798,7 +9798,7 @@ async function sendAIMessage(){
   setTimeout(()=>{const el=document.getElementById('ai-msgs');if(el)el.scrollTop=el.scrollHeight;},50);
   try{
     const provider=cfg.provider||'openai';
-    const defaultModel=provider==='gemini'?'gemini-1.5-flash':provider==='perplexity'?'sonar-pro':'gpt-4o-mini';
+    const defaultModel=provider==='gemini'?'gemini-1.5-flash':provider==='perplexity'?'sonar':'gpt-4o-mini';
     const model=cfg.model||defaultModel;
     const systemPrompt=`You are an office assistant for R B Shah & Associates, a CA firm in Rajkot. You ONLY answer questions about these topics: ${topics.join(', ')}. If a question is off-topic, politely decline and suggest asking about the allowed topics. Be concise, professional, and accurate. Where possible, cite relevant section numbers, rules or standards.${provider==='perplexity'?' Always mention the source/circular/notification number if referencing recent amendments.':''}`;
     let reply='';
@@ -9815,33 +9815,26 @@ async function sendAIMessage(){
       if(j.error){throw new Error(j.error.message||'Gemini error');}
       reply=j.candidates?.[0]?.content?.parts?.[0]?.text||'No response';
     } else if(provider==='perplexity'){
-      // Perplexity — new Agent API (/v1/responses) with live web search
-      const pModel=model.includes('sonar')?model:'sonar-pro';
-      const resp=await fetch('https://api.perplexity.ai/v1/responses',{
+      // Perplexity — chat/completions endpoint with sonar (online search model)
+      const pModel=model||'sonar';
+      const resp=await fetch('https://api.perplexity.ai/chat/completions',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},
         body:JSON.stringify({
           model:pModel,
-          input:[{role:'system',content:systemPrompt},...aiHistory.map(m=>({role:m.role,content:m.content}))],
-          tools:[{type:'web_search'}],
-          max_output_tokens:1000,
-          temperature:0.2
+          messages:[{role:'system',content:systemPrompt},...aiHistory],
+          max_tokens:1000,
+          temperature:0.2,
+          return_citations:true,
+          search_recency_filter:'month'
         })
       });
       const j=await resp.json();
       if(j.error){throw new Error(j.error.message||'Perplexity error: check your API key');}
-      // Extract text from output array
-      let text='';
-      const outputs=j.output||[];
-      for(const o of outputs){
-        if(o.type==='message'&&Array.isArray(o.content)){
-          for(const c of o.content){if(c.type==='output_text')text+=c.text;}
-        }
-      }
-      if(!text)text=j.output_text||'No response';
+      let text=j.choices?.[0]?.message?.content||'No response';
       // Append citations if present
       const cites=j.citations||[];
-      if(cites.length){text+='\n\n📎 Sources:\n'+cites.map((c,i)=>`[${i+1}] ${typeof c==='string'?c:c.url||c}`).join('\n');}
+      if(cites.length){text+='\n\n📎 Sources:\n'+cites.map((c,i)=>`[${i+1}] ${typeof c==='string'?c:(c.url||c.title||c)}`).join('\n');}
       reply=text;
     } else {
       // OpenAI — supports browser CORS with correct key
@@ -9873,7 +9866,7 @@ function aiConfigHTML(){
   const topics=(cfg.allowedTopics||['Tax & GST','Audit & Assurance','Company Law','FEMA & FDI','Accounting Standards','Office Processes','Client Work','General Finance']).join('\n');
   return`${mHdr('AI Ask — Configuration')}
   <div class="form-row"><label class="form-label">Provider</label>
-  <select class="form-select" id="ai-provider" onchange="(function(v){const h=document.getElementById('ai-model-hint');const k=document.getElementById('ai-key-hint');const n=document.getElementById('ai-provider-note');h.textContent=v==='gemini'?'Default: gemini-1.5-flash':v==='perplexity'?'Default: sonar-pro':'Default: gpt-4o-mini';k.textContent=v==='gemini'?'AIza...':v==='perplexity'?'pplx-...':'sk-...';n.innerHTML=v==='perplexity'?'🌐 <strong>Live web search</strong> — answers always current. Get key at <a href=\'https://www.perplexity.ai/settings/api\' target=\'_blank\' style=\'color:var(--accent)\'>perplexity.ai/settings/api</a>':v==='gemini'?'Free tier available at <a href=\'https://aistudio.google.com\' target=\'_blank\' style=\'color:var(--accent)\'>aistudio.google.com</a>. Knowledge cutoff: early 2024.':'Knowledge cutoff Oct 2023. Get key at <a href=\'https://platform.openai.com/api-keys\' target=\'_blank\' style=\'color:var(--accent)\'>platform.openai.com</a>'})(this.value)">
+  <select class="form-select" id="ai-provider" onchange="(function(v){const h=document.getElementById('ai-model-hint');const k=document.getElementById('ai-key-hint');const n=document.getElementById('ai-provider-note');h.textContent=v==='gemini'?'Default: gemini-1.5-flash':v==='perplexity'?'Default: sonar':'Default: gpt-4o-mini';k.textContent=v==='gemini'?'AIza...':v==='perplexity'?'pplx-...':'sk-...';n.innerHTML=v==='perplexity'?'🌐 <strong>Live web search</strong> — answers always current. Get key at <a href=\'https://www.perplexity.ai/settings/api\' target=\'_blank\' style=\'color:var(--accent)\'>perplexity.ai/settings/api</a>':v==='gemini'?'Free tier available at <a href=\'https://aistudio.google.com\' target=\'_blank\' style=\'color:var(--accent)\'>aistudio.google.com</a>. Knowledge cutoff: early 2024.':'Knowledge cutoff Oct 2023. Get key at <a href=\'https://platform.openai.com/api-keys\' target=\'_blank\' style=\'color:var(--accent)\'>platform.openai.com</a>'})(this.value)">
     <option value="perplexity" ${cfg.provider==='perplexity'?'selected':''}>⭐ Perplexity (Live web search — recommended)</option>
     <option value="openai" ${(cfg.provider||'openai')==='openai'&&!cfg.provider?'selected':cfg.provider==='openai'?'selected':''}>OpenAI (GPT-4o / GPT-4o-mini)</option>
     <option value="gemini" ${cfg.provider==='gemini'?'selected':''}>Google Gemini (gemini-1.5-flash)</option>
@@ -9883,7 +9876,7 @@ function aiConfigHTML(){
   </div>
   <div class="form-row"><label class="form-label">API Key</label>
   <input class="form-input" type="password" id="ai-apikey" value="${cfg.apiKey||''}" placeholder="${cfg.provider==='gemini'?'AIza...':cfg.provider==='perplexity'?'pplx-...':'sk-...'}" id="ai-key-hint" autocomplete="new-password"/></div>
-  <div class="form-row"><label class="form-label">Model <span id="ai-model-hint" style="color:var(--text3);font-size:10px">${cfg.provider==='gemini'?'Default: gemini-1.5-flash':cfg.provider==='perplexity'?'Default: sonar-pro':'Default: gpt-4o-mini'}</span></label>
+  <div class="form-row"><label class="form-label">Model <span id="ai-model-hint" style="color:var(--text3);font-size:10px">${cfg.provider==='gemini'?'Default: gemini-1.5-flash':cfg.provider==='perplexity'?'Default: sonar':'Default: gpt-4o-mini'}</span></label>
   <input class="form-input" id="ai-model" value="${cfg.model||''}" placeholder="Leave blank for default"/></div>
   <div class="form-row"><label class="form-label">Allowed Topics <span style="color:var(--text3);font-size:10px">(one per line)</span></label>
   <textarea class="form-input" id="ai-topics" rows="6" style="resize:vertical">${topics}</textarea></div>

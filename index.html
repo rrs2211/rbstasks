@@ -910,7 +910,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
     render();
   });
   db.ref('task_attachments').on('value',s=>{window._taskAttachments=s.val()||{};render();});
-  db.ref('ai_config').on('value',s=>{AI_CFG=s.val()||{};});
+  db.ref('ai_config').on('value',s=>{AI_CFG=s.val()||{};if(curPage==='ai')rerender();});
 }
 
 // ═══════════════════════════════════════
@@ -9855,7 +9855,9 @@ async function saveAIConfig(){
   const topicsRaw=document.getElementById('ai-topics')?.value||'';
   const allowedTopics=topicsRaw.split('\n').map(s=>s.trim()).filter(Boolean);
   if(!apiKey){toast('API key is required');return;}
-  await fbSet('ai_config',{provider,apiKey,model,allowedTopics});
+  const cfg={provider,apiKey,model,allowedTopics};
+  AI_CFG=cfg; // update locally immediately so page re-renders without waiting for Firebase listener
+  await fbSet('ai_config',cfg);
   toast('AI config saved ✓');closeModal();
 }
 async function testAIConfig(){

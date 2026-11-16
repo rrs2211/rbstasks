@@ -10518,59 +10518,32 @@ async function createTask(){
       +'\n\nLogin to your Client Portal for details.';
     sendWhatsAppToClient(clientId, waMsg);
   }
-  // Create certificate if requested — read ALL field values BEFORE closeModal/render
+  // Create certificate if requested
   const createCertCb=document.getElementById('f-create-cert');
-  const wantCert=createCertCb?.checked||false;
-  let certPayload=null;
-  if(wantCert){
+  if(createCertCb?.checked){
     const caFirmId=document.getElementById('f-cert-firm')?.value||'';
-    const editedCertNo=(document.getElementById('f-cert-no')?.value||'').trim();
-    let certNo='';
-    try{certNo=editedCertNo||(caFirmId?generateCertNo(caFirmId):'');}catch(e){certNo=editedCertNo||'';}
+    const editedCertNo=document.getElementById('f-cert-no')?.value?.trim();
+    const certNo=editedCertNo||(caFirmId?generateCertNo(caFirmId):'');
     const certId=uid();
     const certDate=document.getElementById('f-cert-date')?.value||today();
-    const certPurpose=(document.getElementById('f-cert-purpose')?.value||'').trim()||t.title;
+    const certPurpose=document.getElementById('f-cert-purpose')?.value||t.title;
     const certUdin=(document.getElementById('f-cert-udin')?.value||'').trim().toUpperCase();
     const certMember=(document.getElementById('f-cert-member')?.value||'').trim();
     const certNotes=(document.getElementById('f-cert-notes')?.value||'').trim();
-    certPayload={
-      cert:{
-        id:certId, taskId:id, clientId:t.clientId,
-        subDeptId:t.subDeptId||'', deptId:t.deptId,
-        certDate, purpose:certPurpose,
-        caFirmId, signingMember:certMember,
-        udin:certUdin, certNo, notes:certNotes,
-        createdAt:today(), createdByUserId:currentUser.id
-      },
-      certId
+    const newCert={
+      id:certId, taskId:id, clientId:t.clientId,
+      subDeptId:t.subDeptId||'', deptId:t.deptId,
+      certDate, purpose:certPurpose,
+      caFirmId, signingMember:certMember,
+      udin:certUdin, certNo, notes:certNotes,
+      createdAt:today(), createdByUserId:currentUser.id
     };
+    await fbSet('certificates/'+certId, newCert);
+    await fbUpd('tasks/'+id,{isCertificate:true, certId});
   }
-  // Close modal first so DOM is clean, then write cert (all values already captured above)
   closeModal();
-  if(certPayload){
-    try{
-      setSyncing();
-      _ownWriteInProgress=true;
-      await fbSetRaw('certificates/'+certPayload.certId, certPayload.cert);
-      await fbSetRaw('tasks/'+id+'/isCertificate', true);
-      await fbSetRaw('tasks/'+id+'/certId', certPayload.certId);
-      setSyncOk();
-      _ownWriteInProgress=false;
-      // Update local arrays immediately so the cert register reflects it without waiting for Firebase listener
-      CERTIFICATES.push(certPayload.cert);
-      const taskIdx=TASKS.findIndex(x=>x.id===id);
-      if(taskIdx>=0){TASKS[taskIdx].isCertificate=true;TASKS[taskIdx].certId=certPayload.certId;}
-      render();
-      toast('Task + Certificate created ✓');
-    }catch(e){
-      _ownWriteInProgress=false;
-      setSyncErr(e);
-      console.error('[TaskHub] cert write failed:',e);
-      toast('⚠ Task created but cert failed: '+e.message);
-    }
-  } else {
-    toast('Task created! ✓');
-  }
+  render();
+  if(!createCertCb?.checked) toast('Task created! ✓');
 }
 
 // ── Task Detail (with UDIN section) ──

@@ -10515,32 +10515,45 @@ async function createTask(){
       +'\n\nLogin to your Client Portal for details.';
     sendWhatsAppToClient(clientId, waMsg);
   }
-  // Create certificate if requested
+  // Create certificate if requested — read ALL field values BEFORE closeModal/render
   const createCertCb=document.getElementById('f-create-cert');
-  if(createCertCb?.checked){
+  const wantCert=createCertCb?.checked||false;
+  let certPayload=null;
+  if(wantCert){
     const caFirmId=document.getElementById('f-cert-firm')?.value||'';
-    const editedCertNo=document.getElementById('f-cert-no')?.value?.trim();
+    const editedCertNo=(document.getElementById('f-cert-no')?.value||'').trim();
     const certNo=editedCertNo||(caFirmId?generateCertNo(caFirmId):'');
     const certId=uid();
     const certDate=document.getElementById('f-cert-date')?.value||today();
-    const certPurpose=document.getElementById('f-cert-purpose')?.value||t.title;
+    const certPurpose=(document.getElementById('f-cert-purpose')?.value||'').trim()||t.title;
     const certUdin=(document.getElementById('f-cert-udin')?.value||'').trim().toUpperCase();
     const certMember=(document.getElementById('f-cert-member')?.value||'').trim();
     const certNotes=(document.getElementById('f-cert-notes')?.value||'').trim();
-    const newCert={
-      id:certId, taskId:id, clientId:t.clientId,
-      subDeptId:t.subDeptId||'', deptId:t.deptId,
-      certDate, purpose:certPurpose,
-      caFirmId, signingMember:certMember,
-      udin:certUdin, certNo, notes:certNotes,
-      createdAt:today(), createdByUserId:currentUser.id
+    certPayload={
+      cert:{
+        id:certId, taskId:id, clientId:t.clientId,
+        subDeptId:t.subDeptId||'', deptId:t.deptId,
+        certDate, purpose:certPurpose,
+        caFirmId, signingMember:certMember,
+        udin:certUdin, certNo, notes:certNotes,
+        createdAt:today(), createdByUserId:currentUser.id
+      },
+      certId
     };
-    await fbSet('certificates/'+certId, newCert);
-    await fbUpd('tasks/'+id,{isCertificate:true, certId});
   }
+  // Close modal first so DOM is clean, then write cert (all values already captured above)
   closeModal();
-  render();
-  if(!createCertCb?.checked) toast('Task created! ✓');
+  if(certPayload){
+    try{
+      await fbSet('certificates/'+certPayload.certId, certPayload.cert);
+      await fbUpd('tasks/'+id,{isCertificate:true, certId:certPayload.certId});
+      toast('Task + Certificate created ✓');
+    }catch(e){
+      toast('⚠ Task created but cert failed: '+e.message);
+    }
+  } else {
+    toast('Task created! ✓');
+  }
 }
 
 // ── Task Detail (with UDIN section) ──

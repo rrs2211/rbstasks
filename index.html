@@ -892,7 +892,7 @@ if(!loaded.statuses){loaded.statuses=true;checkLoaded();}else render();},e=>{if(
   db.ref('invoices').on('value',s=>{
     window.INVOICES=s.val()?Object.values(s.val()):[];
     if(typeof renderIfReady==='function') renderIfReady();
-  });
+  },function(e){window.INVOICES=[];});
   db.ref('workflow_rules').on('value',function(s){
     var fromFirebase=s.val()?Object.values(s.val()):[];
     if(fromFirebase.length>0){
@@ -3194,18 +3194,21 @@ async function saveBillingInvoice(){
     createdBy:currentUser.id,createdAt:today()
   };
   try{
-    await db.ref('invoices/'+invoiceId).set(invoice);
-    // Update all tasks to invoiced status
+    // Store all invoice details on the tasks themselves (no separate invoices collection needed)
+    const mergeId=taskIds.length>1?uid():null;
     for(const t of tasks){
-      await fbUpd('tasks/'+t.id,{billingStatus:'invoiced',invoiceNo:invNo,invoiceDate:invDate,invoiceId});
-    }
-    // Notify client users linked to this client
-    const clientUsers=USERS.filter(u=>u.role==='client'&&u.clientId===clientId&&u.active!==false);
-    for(const cu of clientUsers){
-      const nid=uid();
-      await db.ref('notifications/'+nid).set({id:nid,type:'invoice_raised',userId:cu.id,
-        message:'New invoice raised: '+invNo+' — ₹'+totalWithGst.toLocaleString('en-IN'),
-        invoiceId,clientId,read:false,createdAt:new Date().toISOString()}).catch(function(){});
+      const upd={
+        billingStatus:'invoiced',
+        invoiceNo:invNo,invoiceDate:invDate,
+        billingAmount:invAmt,
+        applyGst,gstAmount:gstAmt,totalWithGst,
+        invoiceDueDate:invDueDate||null,
+        invoiceFirmId:firm.id||null,invoiceFirmName:firm.name||null,
+        invoiceNotes:notes||null,
+        invoiceCreatedBy:currentUser.id
+      };
+      if(mergeId) upd.mergeGroupId=mergeId;
+      await fbUpd('tasks/'+t.id,upd);
     }
     closeModal();
     toast('✓ Invoice '+invNo+' raised — ₹'+totalWithGst.toLocaleString('en-IN')+(applyGst?' (incl. GST)':'')+(firm.name?' from '+firm.name:''));
@@ -3248,26 +3251,10 @@ async function saveMarkInvoicePaid(invoiceId){
   if(!payDate){toast('Payment date required');return;}
   const payInfo={status:'paid',paidDate:payDate,paidMode:payMode,paidRef:payRef||null,paidRemarks:remarks||null,paidBy:currentUser.id};
   try{
-    if(invoiceId&&!invoiceId.startsWith('task-inv-')){
-      // Firebase invoice record
-      await fbUpd('invoices/'+invoiceId,payInfo);
-      // Also mark tasks as billingPaid
-      const inv=(window.INVOICES||[]).find(i=>i.id===invoiceId);
-      if(inv&&inv.taskIds){
-        for(const tid of inv.taskIds){
-          await fbUpd('tasks/'+tid,{billingPaid:true,billingPaidDate:payDate});
-        }
-      }
-    } else {
-      // Task-based invoice — update tasks grouped by invoiceNo
-      const invNo=document.querySelector('[data-inv-no]')?.dataset.invNo||'';
-      // Find tasks with this invoiceId's tasks
-      const relevantTasks=TASKS.filter(t=>t.id===invoiceId?.replace('task-inv-',''));
-      // Fallback: mark all tasks from the modalState data
-      const ms=window._pendingMarkPaidTaskIds||[];
-      for(const tid of ms){
-        await fbUpd('tasks/'+tid,{billingPaid:true,billingPaidDate:payDate});
-      }
+    // Always use task-based approach — mark all tasks from the modalState data
+    const ms=window._pendingMarkPaidTaskIds||[];
+    for(const tid of ms){
+      await fbUpd('tasks/'+tid,{billingPaid:true,billingPaidDate:payDate,billingPaidMode:payMode||null,billingPaidRef:payRef||null});
     }
     closeModal();
     toast('✓ Invoice marked as paid');
@@ -10520,6 +10507,8 @@ async function createTask(){
   }
   // Create certificate if requested
   const createCertCb=document.getElementById('f-create-cert');
+  let _newCert=null;
+  let _newCertTaskId=null;
   if(createCertCb?.checked){
     const caFirmId=document.getElementById('f-cert-firm')?.value||'';
     const editedCertNo=document.getElementById('f-cert-no')?.value?.trim();
@@ -10530,7 +10519,7 @@ async function createTask(){
     const certUdin=(document.getElementById('f-cert-udin')?.value||'').trim().toUpperCase();
     const certMember=(document.getElementById('f-cert-member')?.value||'').trim();
     const certNotes=(document.getElementById('f-cert-notes')?.value||'').trim();
-    const newCert={
+    _newCert={
       id:certId, taskId:id, clientId:t.clientId,
       subDeptId:t.subDeptId||'', deptId:t.deptId,
       certDate, purpose:certPurpose,
@@ -10538,12 +10527,18 @@ async function createTask(){
       udin:certUdin, certNo, notes:certNotes,
       createdAt:today(), createdByUserId:currentUser.id
     };
-    await fbSet('certificates/'+certId, newCert);
+    _newCertTaskId=id;
+    await fbSet('certificates/'+certId, _newCert);
     await fbUpd('tasks/'+id,{isCertificate:true, certId});
+    // Optimistically update local arrays — Firebase listener may fire after render()
+    if(!CERTIFICATES.find(c=>c.id===certId)) CERTIFICATES.push(_newCert);
+    const _ti=TASKS.findIndex(x=>x.id===id);
+    if(_ti>=0){TASKS[_ti].isCertificate=true;TASKS[_ti].certId=certId;}
   }
   closeModal();
   render();
   if(!createCertCb?.checked) toast('Task created! ✓');
+  else toast('Task + Certificate created ✓');
 }
 
 // ── Task Detail (with UDIN section) ──

@@ -713,9 +713,9 @@ function _localDel(p){var parts=p.split('/');
   else if(parts[0]==='leaves')LEAVES=LEAVES.filter(function(x){return x.id!==parts[1]});
   _lsPersist();rerender();}
 var _isFile=window.location.protocol==='file:';
-function fbSet(p,v){if(_isFile){_localSet(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).set(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
-function fbUpd(p,v){if(_isFile){_localUpd(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).update(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
-function fbDel(p){if(_isFile){_localDel(p);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).remove().then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
+function fbSet(p,v){if(_isFile){_localSet(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).set(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;if(!modalState)render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
+function fbUpd(p,v){if(_isFile){_localUpd(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).update(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;if(!modalState)render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
+function fbDel(p){if(_isFile){_localDel(p);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).remove().then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;if(!modalState)render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
 // fbSetRaw: like fbSet but throws on error — use where the caller needs to catch failures
 function fbSetRaw(p,v){if(_isFile){_localSet(p,v);return Promise.resolve();}return db.ref(p).set(v);}
 function fbUpdRaw(p,v){if(_isFile){_localUpd(p,v);return Promise.resolve();}return db.ref(p).update(v);}

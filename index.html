@@ -10834,12 +10834,21 @@ async function saveTaskDeptSD(id){
   await fbUpd('tasks/'+id,{deptId:newDept,subDeptId:newSD});
   logChange(id,'amended','Dept/Sub-dept updated');toast('Dept saved ✓');
 }
+function getBlockers(taskId){
+  const deps=TASK_DEPS[taskId];
+  if(!deps||!Array.isArray(deps.blockedBy))return[];
+  return deps.blockedBy.filter(bid=>{
+    const bt=TASKS.find(x=>x.id===bid);
+    if(!bt)return false;
+    return !isTaskTerminal(bt);
+  });
+}
 async function saveTaskStatus(id){
   const t=TASKS.find(x=>x.id===id);
   // Block if task has unresolved dependencies
   const blockers=getBlockers(id);
   if(blockers.length){
-    const sel=document.getElementById('status-select-'+id)?.value||'';
+    const sel=document.getElementById('edit-status')?.value||'';
     const termSt=taskStatuses(t);
     if(termSt.includes(sel)){
       const blockerNames=blockers.map(function(bid){var bt=TASKS.find(function(x){return x.id===bid;});return bt?bt.title:'Unknown';}).join(', ');

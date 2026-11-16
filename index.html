@@ -10525,7 +10525,8 @@ async function createTask(){
   if(wantCert){
     const caFirmId=document.getElementById('f-cert-firm')?.value||'';
     const editedCertNo=(document.getElementById('f-cert-no')?.value||'').trim();
-    const certNo=editedCertNo||(caFirmId?generateCertNo(caFirmId):'');
+    let certNo='';
+    try{certNo=editedCertNo||(caFirmId?generateCertNo(caFirmId):'');}catch(e){certNo=editedCertNo||'';}
     const certId=uid();
     const certDate=document.getElementById('f-cert-date')?.value||today();
     const certPurpose=(document.getElementById('f-cert-purpose')?.value||'').trim()||t.title;
@@ -10548,8 +10549,13 @@ async function createTask(){
   closeModal();
   if(certPayload){
     try{
+      setSyncing();
+      _ownWriteInProgress=true;
       await fbSetRaw('certificates/'+certPayload.certId, certPayload.cert);
-      await fbUpdRaw('tasks/'+id,{isCertificate:true, certId:certPayload.certId});
+      await fbSetRaw('tasks/'+id+'/isCertificate', true);
+      await fbSetRaw('tasks/'+id+'/certId', certPayload.certId);
+      setSyncOk();
+      _ownWriteInProgress=false;
       // Update local arrays immediately so the cert register reflects it without waiting for Firebase listener
       CERTIFICATES.push(certPayload.cert);
       const taskIdx=TASKS.findIndex(x=>x.id===id);
@@ -10557,6 +10563,8 @@ async function createTask(){
       render();
       toast('Task + Certificate created ✓');
     }catch(e){
+      _ownWriteInProgress=false;
+      setSyncErr(e);
       console.error('[TaskHub] cert write failed:',e);
       toast('⚠ Task created but cert failed: '+e.message);
     }

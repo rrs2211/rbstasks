@@ -716,6 +716,9 @@ var _isFile=window.location.protocol==='file:';
 function fbSet(p,v){if(_isFile){_localSet(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).set(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
 function fbUpd(p,v){if(_isFile){_localUpd(p,v);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).update(v).then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
 function fbDel(p){if(_isFile){_localDel(p);return Promise.resolve();}setSyncing();_ownWriteInProgress=true;return db.ref(p).remove().then(()=>{setSyncOk();setTimeout(()=>{_ownWriteInProgress=false;render();},400);}).catch(e=>{_ownWriteInProgress=false;setSyncErr(e);})}
+// fbSetRaw: like fbSet but throws on error — use where the caller needs to catch failures
+function fbSetRaw(p,v){if(_isFile){_localSet(p,v);return Promise.resolve();}return db.ref(p).set(v);}
+function fbUpdRaw(p,v){if(_isFile){_localUpd(p,v);return Promise.resolve();}return db.ref(p).update(v);}
 function setSyncing(){syncStatus='syncing';updateSyncDot()}
 function setSyncOk(){syncStatus='ok';updateSyncDot()}
 function setSyncErr(){syncStatus='err';updateSyncDot()}
@@ -10545,10 +10548,16 @@ async function createTask(){
   closeModal();
   if(certPayload){
     try{
-      await fbSet('certificates/'+certPayload.certId, certPayload.cert);
-      await fbUpd('tasks/'+id,{isCertificate:true, certId:certPayload.certId});
+      await fbSetRaw('certificates/'+certPayload.certId, certPayload.cert);
+      await fbUpdRaw('tasks/'+id,{isCertificate:true, certId:certPayload.certId});
+      // Update local arrays immediately so the cert register reflects it without waiting for Firebase listener
+      CERTIFICATES.push(certPayload.cert);
+      const taskIdx=TASKS.findIndex(x=>x.id===id);
+      if(taskIdx>=0){TASKS[taskIdx].isCertificate=true;TASKS[taskIdx].certId=certPayload.certId;}
+      render();
       toast('Task + Certificate created ✓');
     }catch(e){
+      console.error('[TaskHub] cert write failed:',e);
       toast('⚠ Task created but cert failed: '+e.message);
     }
   } else {

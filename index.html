@@ -10420,6 +10420,44 @@ function quickAddClient(){
     openModal('newTask',{prefill:{title:savedTitle,deptId:savedDept,subDeptId:savedSD,dueDate:savedDue,startDate:savedStart,priority:savedPriority,notes:savedNotes,clientId:id,assignees:savedAssignees}});
     toast('Client "'+name.trim()+'" added ✓');
   })}
+async function emailOnTaskCreate(t){
+  // Send email notification to client on task creation (if client has email)
+  const cl=getClient(t.clientId);
+  if(!cl?.email) return;
+  const firm=getActiveFirm()?.name||FIRMS[0]?.name||'R B Shah & Associates';
+  const subject='📋 New Task: '+t.title;
+  const body=[
+    'Dear '+cl.name+',',
+    '',
+    'A new task has been created for you:',
+    'Task: '+t.title,
+    t.dueDate?'Due: '+fmtDate(t.dueDate):'',
+    t.priority?'Priority: '+t.priority:'',
+    t.notes?'Notes: '+t.notes:'',
+    '',
+    'Regards,',
+    firm
+  ].filter(Boolean).join('\n');
+  return sendEmail(cl.email, subject, body, t.title, cl.name, t.dueDate||'');
+}
+async function emailOnTaskClose(t){
+  // Send email notification to client when task is completed/closed
+  const cl=getClient(t.clientId);
+  if(!cl?.email) return;
+  const firm=getActiveFirm()?.name||FIRMS[0]?.name||'R B Shah & Associates';
+  const subject='✅ Task Completed: '+t.title;
+  const body=[
+    'Dear '+cl.name+',',
+    '',
+    'The following task has been completed:',
+    'Task: '+t.title,
+    t.dueDate?'Due: '+fmtDate(t.dueDate):'',
+    '',
+    'Regards,',
+    firm
+  ].filter(Boolean).join('\n');
+  return sendEmail(cl.email, subject, body, t.title, cl.name, t.dueDate||'');
+}
 async function createTask(){
   const title=document.getElementById('f-title')?.value?.trim();
   if(!title){toast('Title required');return;}
